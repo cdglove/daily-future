@@ -57,10 +57,40 @@ BOOST_AUTO_TEST_CASE( void_future )
 	BOOST_TEST_CHECK(f.valid() == false);
 }
 
+BOOST_AUTO_TEST_CASE( ref_future )
+{
+	daily::promise<int&> p;
+	daily::future<int&> f = p.get_future();
+	int x = 5;
+	p.set_value(x);
+	int y = f.get();
+	BOOST_TEST_CHECK(x == y);
+}
+
 BOOST_AUTO_TEST_CASE( packaged_task )
 {
 	daily::packaged_task<int(int)> pt([](int i) { return i * 2; });
 	daily::future<int> f = pt.get_future();
 	pt(5);
 	BOOST_TEST_CHECK(f.get() == 10);
+} 
+
+BOOST_AUTO_TEST_CASE( future_continuation )
+{
+	// daily::packaged_task<int(int)> pt([](int i) { return i * 2; });
+	// daily::future<int> f = pt.get_future();
+	// daily::future<float> f2 = f.then([](daily::future<int> i)
+	// {
+	// 	return i.get() * 2.f;
+	// });
+	// BOOST_TEST_CHECK(f.valid() == false);
+
+	// daily::future<std::string> f3 = f2.then([](daily::future<float> f)
+	// {
+	// 	return std::to_string(f.get());
+	// });
+
+	// pt(5);
+
+	// BOOST_TEST_CHECK(f3.get() == "20");
 } 
