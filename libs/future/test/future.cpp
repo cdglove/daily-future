@@ -1,96 +1,182 @@
+// ****************************************************************************
+// daily/future/test/compat.cpp
+//
+// Copyright Chris Glover 2016
+//
+// Distributed under the Boost Software License, Version 1.0.
+// See accompanying file LICENSE_1_0.txt or copy at
+// http://www.boost.org/LICENSE_1_0.txt
+//
+// ****************************************************************************
 #define BOOST_TEST_MODULE Future
 #include <boost/test/unit_test.hpp>
+#include <boost/fusion/container/vector.hpp>
+#include <boost/fusion/algorithm/iteration/for_each.hpp>
+#include <boost/fusion/container/vector/convert.hpp>
+#include <boost/fusion/adapted/mpl.hpp>
+#include <boost/mpl/transform.hpp>
+#include <boost/mpl/vector.hpp>
 #include "daily/future/future.hpp"
+
+template<typename T>
+struct make_future
+{
+	typedef daily::future<T> type;
+};
+
+template<typename T>
+struct make_promise
+{
+	typedef daily::promise<T> type;
+};
+
+// Types for all specializations.
+typedef boost::mpl::vector<
+	int, 
+	int&, 
+	void
+> all_types;
+
+typedef boost::fusion::result_of::as_vector<
+	typename boost::mpl::transform<all_types, make_future<boost::mpl::_1>>::type
+>::type future_types;
+
+typedef boost::fusion::result_of::as_vector<
+	typename boost::mpl::transform<all_types, make_promise<boost::mpl::_1>>::type
+>::type promise_types;
 
 BOOST_AUTO_TEST_CASE( future_initial_state )
 {
-	daily::future<int> f;
-	BOOST_TEST_CHECK(f.valid() == false);
-	daily::promise<int> p;
-	f = p.get_future();
-	BOOST_TEST_CHECK(f.valid() == true);
+	boost::fusion::for_each(
+		future_types(),
+		[](auto&& f)
+		{
+			BOOST_TEST_CHECK(f.valid() == false);
+		}
+	);
+}
+
+BOOST_AUTO_TEST_CASE( promise_initial_state )
+{
+	promise_types promises;
+	boost::fusion::for_each(
+		promises,
+		[](auto&& p)
+		{
+			auto f = p.get_future();
+			BOOST_TEST_CHECK(f.valid() == true);
+		}
+	);
 }
 
 BOOST_AUTO_TEST_CASE( promise_future_communication )
 {
-	daily::promise<int> p;
-	daily::future<int> f = p.get_future();
-	p.set_value(1);
-	BOOST_TEST_CHECK(f.valid() == true);
-	BOOST_TEST_CHECK(f.get() == 1);
+	{
+		typedef int T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		p.set_value(1);
+		BOOST_TEST_CHECK(f.valid() == true);
+		BOOST_TEST_CHECK(f.get() == 1);
+		BOOST_TEST_CHECK(f.valid() == false);
+	}
+
+	{
+		typedef int& T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		int result = 1;
+		p.set_value(result);
+		BOOST_TEST_CHECK(f.valid() == true);
+		BOOST_TEST_CHECK(&f.get() == &result);
+		BOOST_TEST_CHECK(f.valid() == false);
+	}
+
+	{
+		typedef void T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		p.set_value();
+		BOOST_TEST_CHECK(f.valid() == true);
+		f.get();
+		BOOST_TEST_CHECK(f.valid() == false);
+	}
 }
 
 BOOST_AUTO_TEST_CASE( promise_move_semantics )
 {
-	daily::promise<int> p;
-	daily::future<int> f = p.get_future();
-	daily::promise<int> p2 = std::move(p);
-	p2.set_value(2);
-	BOOST_TEST_CHECK(f.get() == 2);
+	{
+		typedef int T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		daily::promise<T> p2 = std::move(p);
+		p2.set_value(1);
+		BOOST_TEST_CHECK(f.valid() == true);
+		BOOST_TEST_CHECK(f.get() == 1);
+		BOOST_TEST_CHECK(f.valid() == false);
+	}
+
+	{
+		typedef int& T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		daily::promise<T> p2 = std::move(p);
+		int result = 1;
+		p2.set_value(result);
+		BOOST_TEST_CHECK(f.valid() == true);
+		BOOST_TEST_CHECK(&f.get() == &result);
+		BOOST_TEST_CHECK(f.valid() == false);
+	}
+
+	{
+		typedef void T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		daily::promise<T> p2 = std::move(p);
+		p2.set_value();
+		BOOST_TEST_CHECK(f.valid() == true);
+		f.get();
+		BOOST_TEST_CHECK(f.valid() == false);
+	}
 }
 
 BOOST_AUTO_TEST_CASE( future_move_semantics )
 {
-	daily::promise<int> p;
-	daily::future<int> f = p.get_future();
-	daily::future<int> f2 = std::move(f);
-	p.set_value(3);
-	BOOST_TEST_CHECK(f2.get() == 3);
-	BOOST_TEST_CHECK(f.valid() == false);
+	{
+		typedef int T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		daily::future<T> f2 = std::move(f);
+		BOOST_TEST_CHECK(f2.valid() == true);
+		BOOST_TEST_CHECK(f.valid() == false);
+		p.set_value(3);
+		BOOST_TEST_CHECK(f2.get() == 3);
+		BOOST_TEST_CHECK(f2.valid() == false);
+	}
+
+	{
+		typedef int& T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		daily::future<T> f2 = std::move(f);
+		BOOST_TEST_CHECK(f2.valid() == true);
+		BOOST_TEST_CHECK(f.valid() == false);
+		int result = 3;
+		p.set_value(result);
+		BOOST_TEST_CHECK(f2.get() == 3);
+		BOOST_TEST_CHECK(f2.valid() == false);
+	}
+
+	{
+		typedef void T;
+		daily::promise<T> p;
+		daily::future<T> f = p.get_future();
+		daily::future<T> f2 = std::move(f);
+		BOOST_TEST_CHECK(f2.valid() == true);
+		BOOST_TEST_CHECK(f.valid() == false);
+		p.set_value();
+		f2.get();
+		BOOST_TEST_CHECK(f2.valid() == false);
+	}
 }
 
-BOOST_AUTO_TEST_CASE( future_invalidation )
-{
-	daily::promise<int> p;
-	daily::future<int> f = p.get_future();
-	p.set_value(4);
-	BOOST_TEST_CHECK(f.get() == 4);
-	BOOST_TEST_CHECK(f.valid() == false);
-}
-
-BOOST_AUTO_TEST_CASE( void_future )
-{
-	daily::promise<void> p;
-	daily::future<void> f = p.get_future();
-	p.set_value();
-	f.get();
-	BOOST_TEST_CHECK(f.valid() == false);
-}
-
-BOOST_AUTO_TEST_CASE( ref_future )
-{
-	daily::promise<int&> p;
-	daily::future<int&> f = p.get_future();
-	int x = 5;
-	p.set_value(x);
-	int y = f.get();
-	BOOST_TEST_CHECK(x == y);
-}
-
-BOOST_AUTO_TEST_CASE( packaged_task )
-{
-	daily::packaged_task<int(int)> pt([](int i) { return i * 2; });
-	daily::future<int> f = pt.get_future();
-	pt(5);
-	BOOST_TEST_CHECK(f.get() == 10);
-} 
-
-BOOST_AUTO_TEST_CASE( future_continuation )
-{
-	// daily::packaged_task<int(int)> pt([](int i) { return i * 2; });
-	// daily::future<int> f = pt.get_future();
-	// daily::future<float> f2 = f.then([](daily::future<int> i)
-	// {
-	// 	return i.get() * 2.f;
-	// });
-	// BOOST_TEST_CHECK(f.valid() == false);
-
-	// daily::future<std::string> f3 = f2.then([](daily::future<float> f)
-	// {
-	// 	return std::to_string(f.get());
-	// });
-
-	// pt(5);
-
-	// BOOST_TEST_CHECK(f3.get() == "20");
-} 

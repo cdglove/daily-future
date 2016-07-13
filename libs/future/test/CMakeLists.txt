@@ -20,3 +20,4 @@ function(create_test test_name test_source)
 endfunction(create_test)
 
 create_test(test.future future.cpp)
+create_test(test.packaged_task packaged_task.cpp)
