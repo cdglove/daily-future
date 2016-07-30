@@ -180,3 +180,146 @@ BOOST_AUTO_TEST_CASE( future_move_semantics )
 	}
 }
 
+BOOST_AUTO_TEST_CASE( future_any_continuation )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then([](float f) { return (int)f * 2; });
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); });
+	p.set_value(1.f);
+	BOOST_TEST_CHECK(f3.get() == 4);
+}
+
+BOOST_AUTO_TEST_CASE( future_get_continuation )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then([](float f) { return (int)f * 2; });
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	bool continued = false;
+	daily::future<short> f3 = f2.then(daily::continuation_run::get, 
+		[&continued](int i)
+		{
+			continued = true;
+			return (short)(i * 2); 
+		}
+	);
+	p.set_value(1.f);
+	BOOST_TEST_CHECK(continued == false);
+	BOOST_TEST_CHECK(f3.get() == 4);
+	BOOST_TEST_CHECK(continued == true);
+}
+
+BOOST_AUTO_TEST_CASE( future_get_chain_continuation )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then(daily::continuation_run::get, 
+		[](float f) { return (int)f * 2; });
+
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	bool continued = false;
+	daily::future<short> f3 = f2.then(daily::continuation_run::get, 
+		[&continued](int i)
+		{
+			continued = true;
+			return (short)(i * 2); 
+		}
+	);
+	p.set_value(1.f);
+	BOOST_TEST_CHECK(continued == false);
+	BOOST_TEST_CHECK(f3.get() == 4);
+	BOOST_TEST_CHECK(continued == true);
+}
+
+BOOST_AUTO_TEST_CASE( future_set_continuation )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then([](float f) { return (int)f * 2; });
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	bool continued = false;
+	daily::future<short> f3 = f2.then(daily::continuation_run::set, 
+		[&continued](int i)
+		{
+			continued = true;
+			return (short)(i * 2); 
+		}
+	);
+	p.set_value(1.f);
+	BOOST_TEST_CHECK(continued == true);
+	BOOST_TEST_CHECK(f3.get() == 4);
+}
+
+BOOST_AUTO_TEST_CASE( future_set_chain_continuation )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then(daily::continuation_run::set, 
+		[](float f) { return (int)f * 2; });
+
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	bool continued = false;
+	daily::future<short> f3 = f2.then(daily::continuation_run::set, 
+		[&continued](int i)
+		{
+			continued = true;
+			return (short)(i * 2); 
+		}
+	);
+	p.set_value(1.f);
+	BOOST_TEST_CHECK(continued == true);
+	BOOST_TEST_CHECK(f3.get() == 4);
+}
+
+BOOST_AUTO_TEST_CASE( future_get_set_chain_continuation )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then(daily::continuation_run::get, 
+		[](float f) { return (int)f * 2; });
+
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	bool continued = false;
+	daily::future<short> f3 = f2.then(daily::continuation_run::set, 
+		[&continued](int i)
+		{
+			continued = true;
+			return (short)(i * 2); 
+		}
+	);
+	p.set_value(1.f);
+	BOOST_TEST_CHECK(continued == false);
+	BOOST_TEST_CHECK(f3.get() == 4);
+	BOOST_TEST_CHECK(continued == true);
+}
+
+BOOST_AUTO_TEST_CASE( future_set_get_chain_continuation )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then(daily::continuation_run::set, 
+		[](float f) { return (int)f * 2; });
+
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	bool continued = false;
+	daily::future<short> f3 = f2.then(daily::continuation_run::get, 
+		[&continued](int i)
+		{
+			continued = true;
+			return (short)(i * 2); 
+		}
+	);
+	p.set_value(1.f);
+	BOOST_TEST_CHECK(continued == false);
+	BOOST_TEST_CHECK(f3.get() == 4);
+	BOOST_TEST_CHECK(continued == true);
+}
