@@ -163,8 +163,9 @@ namespace daily
 				return is_valid_;
 			}
 
-			void set_continuation(std::shared_ptr<future_shared_state_base> continuation, 
-								  std::unique_lock<std::mutex>& lock)
+			void set_continuation(
+				std::shared_ptr<future_shared_state_base> continuation, 
+				std::unique_lock<std::mutex>& lock)
 			{
 				continuation_ = std::move(continuation);
 				if(finished_)
@@ -434,8 +435,8 @@ namespace daily
 				std::unique_lock<std::mutex>& this_lock) override
 			{
 				auto parent_state = get_parent_state();
-				parent_state->continuation_result_requested(this_lock);
 				auto parent_lock = parent_state->lock();
+				parent_state->continuation_result_requested(parent_lock);
 				this->do_continue(parent_state->get(parent_lock), this_lock);
 			}
 		};
