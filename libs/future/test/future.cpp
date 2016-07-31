@@ -200,7 +200,7 @@ BOOST_AUTO_TEST_CASE( future_get_continuation )
 	BOOST_TEST_CHECK(f2.valid() == true);
 	BOOST_TEST_CHECK(f.valid() == false);
 	bool continued = false;
-	daily::future<short> f3 = f2.then(daily::continuation_run::get, 
+	daily::future<short> f3 = f2.then(daily::continue_on::get, 
 		[&continued](int i)
 		{
 			continued = true;
@@ -217,13 +217,13 @@ BOOST_AUTO_TEST_CASE( future_get_chain_continuation )
 {
 	daily::promise<float> p;
 	daily::future<float> f = p.get_future();
-	daily::future<int> f2 = f.then(daily::continuation_run::get, 
+	daily::future<int> f2 = f.then(daily::continue_on::get, 
 		[](float f) { return (int)f * 2; });
 
 	BOOST_TEST_CHECK(f2.valid() == true);
 	BOOST_TEST_CHECK(f.valid() == false);
 	bool continued = false;
-	daily::future<short> f3 = f2.then(daily::continuation_run::get, 
+	daily::future<short> f3 = f2.then(daily::continue_on::get, 
 		[&continued](int i)
 		{
 			continued = true;
@@ -244,7 +244,7 @@ BOOST_AUTO_TEST_CASE( future_set_continuation )
 	BOOST_TEST_CHECK(f2.valid() == true);
 	BOOST_TEST_CHECK(f.valid() == false);
 	bool continued = false;
-	daily::future<short> f3 = f2.then(daily::continuation_run::set, 
+	daily::future<short> f3 = f2.then(daily::continue_on::set, 
 		[&continued](int i)
 		{
 			continued = true;
@@ -260,13 +260,13 @@ BOOST_AUTO_TEST_CASE( future_set_chain_continuation )
 {
 	daily::promise<float> p;
 	daily::future<float> f = p.get_future();
-	daily::future<int> f2 = f.then(daily::continuation_run::set, 
+	daily::future<int> f2 = f.then(daily::continue_on::set, 
 		[](float f) { return (int)f * 2; });
 
 	BOOST_TEST_CHECK(f2.valid() == true);
 	BOOST_TEST_CHECK(f.valid() == false);
 	bool continued = false;
-	daily::future<short> f3 = f2.then(daily::continuation_run::set, 
+	daily::future<short> f3 = f2.then(daily::continue_on::set, 
 		[&continued](int i)
 		{
 			continued = true;
@@ -282,13 +282,13 @@ BOOST_AUTO_TEST_CASE( future_get_set_chain_continuation )
 {
 	daily::promise<float> p;
 	daily::future<float> f = p.get_future();
-	daily::future<int> f2 = f.then(daily::continuation_run::get, 
+	daily::future<int> f2 = f.then(daily::continue_on::get, 
 		[](float f) { return (int)f * 2; });
 
 	BOOST_TEST_CHECK(f2.valid() == true);
 	BOOST_TEST_CHECK(f.valid() == false);
 	bool continued = false;
-	daily::future<short> f3 = f2.then(daily::continuation_run::set, 
+	daily::future<short> f3 = f2.then(daily::continue_on::set, 
 		[&continued](int i)
 		{
 			continued = true;
@@ -305,13 +305,13 @@ BOOST_AUTO_TEST_CASE( future_set_get_chain_continuation )
 {
 	daily::promise<float> p;
 	daily::future<float> f = p.get_future();
-	daily::future<int> f2 = f.then(daily::continuation_run::set, 
+	daily::future<int> f2 = f.then(daily::continue_on::set, 
 		[](float f) { return (int)f * 2; });
 
 	BOOST_TEST_CHECK(f2.valid() == true);
 	BOOST_TEST_CHECK(f.valid() == false);
 	bool continued = false;
-	daily::future<short> f3 = f2.then(daily::continuation_run::get, 
+	daily::future<short> f3 = f2.then(daily::continue_on::get, 
 		[&continued](int i)
 		{
 			continued = true;
