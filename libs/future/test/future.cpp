@@ -16,6 +16,7 @@
 #include <boost/fusion/adapted/mpl.hpp>
 #include <boost/mpl/transform.hpp>
 #include <boost/mpl/vector.hpp>
+#include <boost/thread/executors/thread_executor.hpp>
 #include "daily/future/future.hpp"
 
 template<typename T>
@@ -322,4 +323,31 @@ BOOST_AUTO_TEST_CASE( future_set_get_chain_continuation )
 	BOOST_TEST_CHECK(continued == false);
 	BOOST_TEST_CHECK(f3.get() == 4);
 	BOOST_TEST_CHECK(continued == true);
+}
+
+BOOST_AUTO_TEST_CASE( future_multithread )
+{
+	boost::executors::thread_executor pool;
+	int repeat = 10000;
+	while(repeat--)
+	{
+		daily::promise<float> p;
+		daily::future<float> f = p.get_future();
+		pool.submit([&p, repeat] { p.set_value((float)repeat); });
+		BOOST_TEST_CHECK(f.get() == repeat);
+	}	
+}
+
+BOOST_AUTO_TEST_CASE( future_multithread_get_continuation )
+{
+	boost::executors::thread_executor pool;
+	int repeat = 10000;
+	while(repeat--)
+	{
+		daily::promise<int> p;
+		daily::future<int> f = p.get_future();
+		pool.submit([&p, repeat] { p.set_value(repeat); });
+		auto f2 = f.then(daily::continue_on::get, [](int v) { return v * 2; });
+		BOOST_TEST_CHECK(f2.get() == (2 * repeat));
+	}	
 }

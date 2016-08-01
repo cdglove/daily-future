@@ -136,7 +136,15 @@ namespace daily
 				ready_wait_.notify_all();
 				if(continuation_)
 				{
-					auto child_lock = continuation_->lock();
+					// Always need to lock in the rder or child then parent.
+					// So if we have the parent lock, we need to release it first
+					// then obtain the child lock.
+					std::unique_lock<std::mutex> child_lock;
+					{
+						reverse_lock reverse(lock);
+						child_lock = continuation_->lock();
+					}
+
 					continuation_->continuation_result_ready(lock, child_lock);
 				}
 			}
@@ -224,8 +232,11 @@ namespace daily
 			{}
 
 			virtual void handle_continuation_result_requested(
-				std::unique_lock<std::mutex>&)
-			{}
+				std::unique_lock<std::mutex>& lock)
+			{
+				while(!finished_)
+					ready_wait_.wait(lock);
+			}
 
 			mutable std::mutex mutex_;
 			std::exception_ptr exception_;
@@ -242,7 +253,7 @@ namespace daily
 
 			typedef boost::optional<Result> storage_type;
 
-			void set_finished_with_result(Result&& r, std::unique_lock<std::mutex>& lock)
+			void set_finished_with_result(Result r, std::unique_lock<std::mutex>& lock)
 			{
 				result_ = std::move(r);
 				set_finished(lock);
@@ -541,7 +552,7 @@ namespace daily
 		}
 
 		// Use a vararg here to avoid having to specialize the whole class for
-		// lvalue ref anf void.
+		// lvalue ref and void.
 		template<typename... R>
 		void set_value(R&&... value)
 		{
