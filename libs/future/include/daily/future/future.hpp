@@ -413,6 +413,10 @@ namespace daily
 			{
 				auto parent_state = this->get_parent_state();
 				auto parent_lock = parent_state->lock();
+				// Parent state may try to lock us again and since then
+				// mutex is not recursive by default, we need to unlock it
+				// before making the call to avoid a deadlock.
+				reverse_lock reverse(this_lock);
 				parent_state->continuation_result_requested(parent_lock);
 			}
 		};
@@ -436,8 +440,22 @@ namespace daily
 			{
 				auto parent_state = this->get_parent_state();
 				auto parent_lock = parent_state->lock();
-				parent_state->continuation_result_requested(parent_lock);
-				this->do_continue(parent_state->get(parent_lock), this_lock);
+
+				// Parent state may try to lock us again and since then
+				// mutex is not recursive by default, we need to unlock it
+				// before making the call to avoid a deadlock.
+				{
+					reverse_lock reverse(this_lock);
+					parent_state->continuation_result_requested(parent_lock);
+				}
+
+				// Annnd, we need to do it again when calling continue.
+				// Need to think of a better way to do this.
+				{
+					auto result = parent_state->get(parent_lock);
+					reverse_lock reverse(parent_lock);
+					this->do_continue(std::move(result), this_lock);
+				}
 			}
 		};
 
