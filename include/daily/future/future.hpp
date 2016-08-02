@@ -115,7 +115,7 @@ namespace daily
 
 		// -------------------------------------------------------------------------
 		// Base shared state used by all derived shared states.
-		class future_shared_state_base : std::enable_shared_from_this<future_shared_state_base>
+		class future_shared_state_base
 		{
 		public:
 			// No copying or moving, pointer semantic only.
