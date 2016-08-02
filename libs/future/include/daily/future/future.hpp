@@ -113,7 +113,9 @@ namespace daily
 			reverse_lock(reverse_lock const&) = delete;
 		};
 
-		class future_shared_state_base
+		// -------------------------------------------------------------------------
+		// Base shared state used by all derived shared states.
+		class future_shared_state_base : std::enable_shared_from_this<future_shared_state_base>
 		{
 		public:
 			// No copying or moving, pointer semantic only.
@@ -136,16 +138,7 @@ namespace daily
 				ready_wait_.notify_all();
 				if(continuation_)
 				{
-					// Always need to lock in the rder or child then parent.
-					// So if we have the parent lock, we need to release it first
-					// then obtain the child lock.
-					std::unique_lock<std::mutex> child_lock;
-					{
-						reverse_lock reverse(lock);
-						child_lock = continuation_->lock();
-					}
-
-					continuation_->continuation_result_ready(lock, child_lock);
+					continuation_->continuation_result_ready(lock);
 				}
 			}
 
@@ -192,53 +185,54 @@ namespace daily
 			}
 
 			template <typename Rep, typename Period>
-			future_status do_wait_for(std::chrono::duration<Rep, Period> const& rel_time)
+			future_status do_wait_for(
+				std::chrono::duration<Rep, Period> const& rel_time,
+				std::unique_lock<std::mutex>& lock)
 			{
 				ready_wait_.wait_for(rel_time, lock);
 				return finished_ ? future_status::ready : future_status::timeout;
 			}
 
 			template <typename Clock, typename Duration>
-			future_status do_wait_until(std::chrono::time_point<Clock, Duration> const& abs_time)
+			future_status do_wait_until(
+				std::chrono::time_point<Clock, Duration> const& abs_time,
+				std::unique_lock<std::mutex>& lock)
 			{
 				ready_wait_.wait_until(abs_time, lock);
 				return finished_ ? future_status::ready : future_status::timeout;
 			}
 
-			std::unique_lock<std::mutex> lock() const
-			{
-				return std::unique_lock<std::mutex>(mutex_);
-			}
-
 			// Only implemented by continuation derived shared_state types
-			void continuation_result_ready(
-				std::unique_lock<std::mutex>& parent_lock, 
-				std::unique_lock<std::mutex>& this_lock)
+			void continuation_result_ready(std::unique_lock<std::mutex>& lock)
 			{
-				handle_continuation_result_ready(parent_lock, this_lock);
+				handle_continuation_result_ready(lock);
 			}
 
-			void continuation_result_requested(std::unique_lock<std::mutex>& this_lock)
+			void continuation_result_requested(std::unique_lock<std::mutex>& lock)
 			{
-				handle_continuation_result_requested(this_lock);
+				handle_continuation_result_requested(lock);
+			}
+
+			void continuation_end_point_removed(std::unique_lock<std::mutex>& lock)
+			{
+				handle_continuation_end_point_removed(lock);
 			}
 
 		private:
 
 			// Only implemented by continuation derived shared_state types
-			virtual void handle_continuation_result_ready(
-				std::unique_lock<std::mutex>&, 
-				std::unique_lock<std::mutex>&)
+			virtual void handle_continuation_result_ready(std::unique_lock<std::mutex>&)
 			{}
 
-			virtual void handle_continuation_result_requested(
-				std::unique_lock<std::mutex>& lock)
+			virtual void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock)
 			{
 				while(!finished_)
 					ready_wait_.wait(lock);
 			}
 
-			mutable std::mutex mutex_;
+			virtual void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock)
+			{}
+
 			std::exception_ptr exception_;
 			std::condition_variable ready_wait_;
 			std::shared_ptr<future_shared_state_base> continuation_;
@@ -246,6 +240,8 @@ namespace daily
 			bool is_valid_;
 		};
 
+		// -------------------------------------------------------------------------
+		// Base shared state used by all dreived shares states -- adds the result.
 		template<typename Result>
 		class future_shared_state : public future_shared_state_base
 		{
@@ -270,8 +266,9 @@ namespace daily
 			storage_type result_;
 		};
 
-		// ---------------------------------------------------------------------
-		//
+		// -------------------------------------------------------------------------
+		// Base shared state used by all dreived shares states -- adds the result 
+		// with a void specialization.
 		template<>
 		class future_shared_state<void> : public future_shared_state_base
 		{
@@ -291,8 +288,9 @@ namespace daily
 			}
 		};
 
-		// ---------------------------------------------------------------------
-		//
+		// -------------------------------------------------------------------------
+		// Base shared state used by all dreived shares states -- adds the result 
+		// with a ref specialization.
 		template<typename Result>
 		class future_shared_state<Result&> : public future_shared_state_base
 		{
@@ -323,13 +321,36 @@ namespace daily
 		};
 
 		// ---------------------------------------------------------------------
+		// Shared state initially created by the promise. Contains the mutex
+		// used to lock the system.
+		template<typename Result>
+		class promise_future_shared_state : public future_shared_state<Result>
+		{
+		public:
+
+			std::unique_lock<std::mutex> lock() const
+			{
+				return std::unique_lock<std::mutex>(mutex_);
+			}
+
+		private:
+
+			template<typename>
+			friend class promise;
+
+			mutable std::mutex mutex_;
+		};
+
+		// ---------------------------------------------------------------------
 		// Basic Continuations.
-		template<typename Future, typename Result, typename Function>
+		template<typename ParentResult, typename Result, typename Function>
 		class continue_on_basic_shared_state : public future_shared_state<Result>
 		{
 		public:
 
-			continue_on_basic_shared_state(Future&& parent, Function&& f)
+			continue_on_basic_shared_state(
+				std::shared_ptr<future_shared_state<ParentResult>>&& parent,
+				Function&& f)
 				: parent_(std::move(parent))
 				, continuation_(std::move(f))
 			{}
@@ -338,28 +359,37 @@ namespace daily
 			
 		protected:
 
-			future_shared_state<typename Future::result_type>* get_parent_state()
+			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
 			{
-				return parent_.state_.get();
+				parent_->continuation_end_point_removed(lock);
+				parent_ = nullptr;
 			}
 
-			void do_continue(
-				typename Future::result_type&& result_to_forward, 
-				std::unique_lock<std::mutex>& this_lock)
+			future_shared_state<ParentResult>* get_parent_state()
+			{
+				return parent_.get();
+			}
+
+			void do_continue(ParentResult&& result_to_forward, std::unique_lock<std::mutex>& lock)
 			{
 				BOOST_TRY
 				{
+					// Don't call user code with the lock still obtained.
+					lock.unlock();
 					Result current_result = continuation_(std::move(result_to_forward));
-					this->set_finished_with_result(std::move(current_result), this_lock);
+					lock.lock();
+					// cglover-aug8th_2016: Can an exception leak from here?
+					this->set_finished_with_result(std::move(current_result), lock);
 				}
 				BOOST_CATCH(...)
 				{
-					this->set_finished_with_exception(std::current_exception(), this_lock);
+					lock.lock();
+					this->set_finished_with_exception(std::current_exception(), lock);
 				}
 				BOOST_CATCH_END
 			}
 
-			Future parent_;
+			std::shared_ptr<future_shared_state<ParentResult>> parent_;
 			Function continuation_;
 		};
 
@@ -369,131 +399,113 @@ namespace daily
 
 		// ---------------------------------------------------------------------
 		//
-		template<typename Future, typename Result, typename Function>
+		template<typename ParentResult, typename Result, typename Function>
 		class continue_on_any_shared_state
-			: public continue_on_basic_shared_state<Future, Result, Function>
+			: public continue_on_basic_shared_state<ParentResult, Result, Function>
 		{
 		public:
 
 			using continue_on_basic_shared_state<
-				Future, Result, Function
+				ParentResult, Result, Function
 			>::continue_on_basic_shared_state;
 
 		private:
 
-			void handle_continuation_result_ready(
-				std::unique_lock<std::mutex>& parent_lock, 
-				std::unique_lock<std::mutex>& this_lock) override
+			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
 			{
 				auto parent_state = this->get_parent_state();
-				this->do_continue(parent_state->get(parent_lock), this_lock);
+				this->do_continue(parent_state->get(lock), lock);
 			}
 
-			void handle_continuation_result_requested(std::unique_lock<std::mutex>& this_lock) override
+			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock) override
 			{
 				auto parent_state = this->get_parent_state();
-				auto parent_lock = parent_state->lock();
-				this->do_continue(parent_state->get(parent_lock), this_lock);
+				this->do_continue(parent_state->get(lock), lock);
 			}
 		};
 
 		// ---------------------------------------------------------------------
 		//
-		template<typename Future, typename Result, typename Function>
+		template<typename ParentResult, typename Result, typename Function>
 		class continue_on_set_shared_state 
-			: public continue_on_basic_shared_state<Future, Result, Function>
+			: public continue_on_basic_shared_state<ParentResult, Result, Function>
 		{
 		public:
 
 			using continue_on_basic_shared_state<
-				Future, Result, Function
+				ParentResult, Result, Function
 			>::continue_on_basic_shared_state;
 
 		private:
 
-			void handle_continuation_result_ready(
-				std::unique_lock<std::mutex>& parent_lock, 
-				std::unique_lock<std::mutex>& this_lock) override
+			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
 			{
 				auto parent_state = this->get_parent_state();
-				this->do_continue(parent_state->get(parent_lock), this_lock);
+				this->do_continue(parent_state->get(lock), lock);
 			}
 
-			void handle_continuation_result_requested(
-				std::unique_lock<std::mutex>& this_lock)
+			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock)
 			{
 				auto parent_state = this->get_parent_state();
-				auto parent_lock = parent_state->lock();
-				// Parent state may try to lock us again and since then
-				// mutex is not recursive by default, we need to unlock it
-				// before making the call to avoid a deadlock.
-				reverse_lock reverse(this_lock);
-				parent_state->continuation_result_requested(parent_lock);
+				parent_state->continuation_result_requested(lock);
 			}
 		};
 
 		// ---------------------------------------------------------------------
 		//
-		template<typename Future, typename Result, typename Function>
+		template<typename ParentResult, typename Result, typename Function>
 		class continue_on_get_shared_state
-			: public continue_on_basic_shared_state<Future, Result, Function>
+			: public continue_on_basic_shared_state<ParentResult, Result, Function>
 		{
 		public:
 
 			using continue_on_basic_shared_state<
-				Future, Result, Function
+				ParentResult, Result, Function
 			>::continue_on_basic_shared_state;
 
 		private:
 
-			void handle_continuation_result_requested(
-				std::unique_lock<std::mutex>& this_lock) override
+			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock) override
 			{
 				auto parent_state = this->get_parent_state();
-				auto parent_lock = parent_state->lock();
-
-				// Parent state may try to lock us again and since then
-				// mutex is not recursive by default, we need to unlock it
-				// before making the call to avoid a deadlock.
-				{
-					reverse_lock reverse(this_lock);
-					parent_state->continuation_result_requested(parent_lock);
-				}
-
-				// Annnd, we need to do it again when calling continue.
-				// Need to think of a better way to do this.
-				{
-					auto result = parent_state->get(parent_lock);
-					reverse_lock reverse(parent_lock);
-					this->do_continue(std::move(result), this_lock);
-				}
+				parent_state->continuation_result_requested(lock);
+				this->do_continue(parent_state->get(lock), lock);
 			}
 		};
 
 		// ---------------------------------------------------------------------
 		//
-		template<typename Result, typename Future, typename Function>
-		auto make_continue_on_continuation(continue_on::any_t, Future future, Function&& func)
+		template<typename Result, typename ParentResult, typename Function>
+		auto make_continue_on_continuation(
+			continue_on::any_t,
+			std::shared_ptr<future_shared_state<ParentResult>> parent, 
+			Function&& func)
 		{
 			return std::make_shared<
-				continue_on_any_shared_state<Future, Result, Function>
-			>(std::move(future), std::forward<Function>(func));
+				continue_on_any_shared_state<ParentResult, Result, Function>
+			>(std::move(parent), std::forward<Function>(func));
 		}
 
-		template<typename Result, typename Future, typename Function>
-		auto make_continue_on_continuation(continue_on::get_t, Future future, Function&& func)
+		template<typename Result, typename ParentResult, typename Function>
+		auto make_continue_on_continuation(
+			continue_on::get_t, 
+			std::shared_ptr<future_shared_state<ParentResult>> parent, 
+			Function&& func)
 		{
 			return std::make_shared<
-				continue_on_get_shared_state<Future, Result, Function>
-			>(std::move(future), std::forward<Function>(func));
+				continue_on_get_shared_state<ParentResult, Result, Function>
+			>(std::move(parent), std::forward<Function>(func));
 		}
 
-		template<typename Result, typename Future, typename Function>
-		auto make_continue_on_continuation(continue_on::set_t, Future future, Function&& func)
+		template<typename Result, typename ParentResult, typename Function>
+		auto make_continue_on_continuation(
+			continue_on::set_t, 
+			std::shared_ptr<future_shared_state<ParentResult>> parent, 
+			Function&& func)
 		{
 			return std::make_shared<
-				continue_on_set_shared_state<Future, Result, Function>
-			>(std::move(future), std::forward<Function>(func));
+				continue_on_set_shared_state<ParentResult, Result, Function>
+			>(std::move(parent), std::forward<Function>(func));
 		}
 	}
 
@@ -502,7 +514,7 @@ namespace daily
 	{
 	private:
 
-		typedef detail::future_shared_state<Result> shared_state;
+		typedef detail::promise_future_shared_state<Result> shared_state;
 
 	public:
 		promise()
@@ -548,7 +560,7 @@ namespace daily
 			}
 
 			future_obtained_ = true;
-			return future<Result>(state_);
+			return future<Result>(state_, &state_->mutex_);
 		}
 
 		// Use a vararg here to avoid having to specialize the whole class for
@@ -626,16 +638,30 @@ namespace daily
 	public:
 
 		future() noexcept
+			: mutex_(nullptr)
 		{}
+
+		~future()
+		{
+			if(state_)
+			{
+				// We need to tell all of the shared states that the end point has
+				// been removed in order to remove the circular shared_ptr references
+				auto lk = lock();
+				state_->continuation_end_point_removed(lk);
+			}
+		}
 
 		// move support
 		future(future&& other) noexcept
 			: state_(std::move(other.state_))
+			, mutex_(std::move(other.mutex_))
 		{}
 
 		future& operator=(future&& other) noexcept
 		{
 			state_ = std::move(other.state_);
+			mutex_ = std::move(other.mutex_);
 			return *this;
 		}
 
@@ -645,7 +671,7 @@ namespace daily
 
 		Result get()
 		{
-			auto lk = state_->lock();
+			auto lk = lock();
 			state_->do_wait(lk);
 			return state_->get(lk);
 		}
@@ -654,7 +680,7 @@ namespace daily
 		{
 			if(state_)
 			{
-				auto lk = state_->lock();
+				auto lk = lock();
 				return state_->is_valid(lk);
 			}
 
@@ -663,21 +689,21 @@ namespace daily
 
 		void wait() const
 		{
-			auto lk = state_.lock();
+			auto lk = lock();
 			return state_.wait(lk);
 		}
 
 		template <typename Rep, typename Period>
 		future_status wait_for(std::chrono::duration<Rep, Period> const& rel_time) const
 		{
-			auto lk = state_->lock();
+			auto lk = lock();
 			return state_.wait_for(rel_time, lk);
 		}
 
 		template <typename Clock, typename Duration>
 		future_status wait_until(std::chrono::time_point<Clock, Duration> const& abs_time) const
 		{
-			auto lk = state_->lock();
+			auto lk = lock();
 			return state_.wait_until(abs_time, lk);
 		}
 
@@ -716,11 +742,16 @@ namespace daily
 			auto current_state = state_;
 			auto continuation_state = detail::make_continue_on_continuation<
 											ContinuationResult
-									>(s, std::move(*this), std::forward<F>(f));
+									>(s, std::move(state_), std::forward<F>(f));
 
-			auto lk = current_state->lock();
+			auto lk = lock();
 			current_state->set_continuation(continuation_state, lk);
-			return future<ContinuationResult>(continuation_state);
+			return future<ContinuationResult>(continuation_state, mutex_);
+		}
+
+		std::unique_lock<std::mutex> lock() const
+		{
+			return std::unique_lock<std::mutex>(*mutex_);
 		}
 
 		template<typename>
@@ -732,11 +763,13 @@ namespace daily
 		template<typename, typename, typename>
 		friend class detail::continue_on_basic_shared_state;
 
-		explicit future(std::shared_ptr<shared_state> ss)
+		explicit future(std::shared_ptr<shared_state> ss, std::mutex* promise_mutex)
 			: state_(std::move(ss))
+			, mutex_(promise_mutex)
 		{}
 
 		std::shared_ptr<shared_state> state_;
+		std::mutex* mutex_;
 	};
 
 	// -------------------------------------------------------------------------

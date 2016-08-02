@@ -46,29 +46,29 @@ typedef boost::fusion::result_of::as_vector<
 	typename boost::mpl::transform<all_types, make_promise<boost::mpl::_1>>::type
 >::type promise_types;
 
-BOOST_AUTO_TEST_CASE( future_initial_state )
-{
-	boost::fusion::for_each(
-		future_types(),
-		[](auto&& f)
-		{
-			BOOST_TEST_CHECK(f.valid() == false);
-		}
-	);
-}
-
-BOOST_AUTO_TEST_CASE( promise_initial_state )
-{
-	promise_types promises;
-	boost::fusion::for_each(
-		promises,
-		[](auto&& p)
-		{
-			auto f = p.get_future();
-			BOOST_TEST_CHECK(f.valid() == true);
-		}
-	);
-}
+//BOOST_AUTO_TEST_CASE( future_initial_state )
+//{
+//	boost::fusion::for_each(
+//		future_types(),
+//		[](auto&& f)
+//		{
+//			BOOST_TEST_CHECK(f.valid() == false);
+//		}
+//	);
+//}
+//
+//BOOST_AUTO_TEST_CASE( promise_initial_state )
+//{
+//	promise_types promises;
+//	boost::fusion::for_each(
+//		promises,
+//		[](auto&& p)
+//		{
+//			auto f = p.get_future();
+//			BOOST_TEST_CHECK(f.valid() == true);
+//		}
+//	);
+//}
 
 BOOST_AUTO_TEST_CASE( promise_future_communication )
 {
@@ -181,6 +181,16 @@ BOOST_AUTO_TEST_CASE( future_move_semantics )
 	}
 }
 
+BOOST_AUTO_TEST_CASE( future_continuation_noncircular )
+{
+	daily::promise<float> p;
+	daily::future<float> f = p.get_future();
+	daily::future<int> f2 = f.then([](float f) { return (int)f * 2; });
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); });
+}
+
 BOOST_AUTO_TEST_CASE( future_any_continuation )
 {
 	daily::promise<float> p;
@@ -191,6 +201,7 @@ BOOST_AUTO_TEST_CASE( future_any_continuation )
 	daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); });
 	p.set_value(1.f);
 	BOOST_TEST_CHECK(f3.get() == 4);
+	f3 = daily::future<short>();
 }
 
 BOOST_AUTO_TEST_CASE( future_get_continuation )
