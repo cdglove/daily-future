@@ -1,5 +1,5 @@
 // ****************************************************************************
-// daily/future/test/compat.cpp
+// daily/future/test/future.cpp
 //
 // Copyright Chris Glover 2016
 //
@@ -46,29 +46,29 @@ typedef boost::fusion::result_of::as_vector<
 	typename boost::mpl::transform<all_types, make_promise<boost::mpl::_1>>::type
 >::type promise_types;
 
-//BOOST_AUTO_TEST_CASE( future_initial_state )
-//{
-//	boost::fusion::for_each(
-//		future_types(),
-//		[](auto&& f)
-//		{
-//			BOOST_TEST_CHECK(f.valid() == false);
-//		}
-//	);
-//}
-//
-//BOOST_AUTO_TEST_CASE( promise_initial_state )
-//{
-//	promise_types promises;
-//	boost::fusion::for_each(
-//		promises,
-//		[](auto&& p)
-//		{
-//			auto f = p.get_future();
-//			BOOST_TEST_CHECK(f.valid() == true);
-//		}
-//	);
-//}
+BOOST_AUTO_TEST_CASE( future_initial_state )
+{
+	boost::fusion::for_each(
+		future_types(),
+		[](auto&& f)
+		{
+			BOOST_TEST_CHECK(f.valid() == false);
+		}
+	);
+}
+
+BOOST_AUTO_TEST_CASE( promise_initial_state )
+{
+	promise_types promises;
+	boost::fusion::for_each(
+		promises,
+		[](auto&& p)
+		{
+			auto f = p.get_future();
+			BOOST_TEST_CHECK(f.valid() == true);
+		}
+	);
+}
 
 BOOST_AUTO_TEST_CASE( promise_future_communication )
 {

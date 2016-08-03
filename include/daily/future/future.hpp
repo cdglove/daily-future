@@ -1,8 +1,8 @@
 // ****************************************************************************
 // daily/future/future.hpp
 //
-// An extension of std::future that allows continuation via ::dispatch, 
-// ::post and ::defer.
+// An extension of std::future that provides a continuation interface that
+// allows users to control where the continuation runs.
 // 
 // Copyright Chris Glover 2016
 //
@@ -335,6 +335,13 @@ namespace daily
 
 		private:
 
+			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
+			{
+				// At this point we justr unlock the lock because we know one end point
+				// is going away anyway so there's no way to mess up the state.
+				lock.unlock();
+			}
+
 			template<typename>
 			friend class promise;
 
@@ -361,8 +368,10 @@ namespace daily
 
 			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
 			{
-				parent_->continuation_end_point_removed(lock);
-				parent_ = nullptr;
+				// Move the parent into a local while we have the lock because
+				// once we call continuation_end_point_removed we might not have the lock anymore.
+				auto keep_alive = std::move(parent_);
+				keep_alive->continuation_end_point_removed(lock);
 			}
 
 			future_shared_state<ParentResult>* get_parent_state()
