@@ -142,8 +142,9 @@ namespace daily
 				}
 			}
 
-			void set_finished_with_exception(std::exception_ptr p, 
-											 std::unique_lock<std::mutex>& lock)
+			void set_finished_with_exception(
+				std::exception_ptr p, 
+				std::unique_lock<std::mutex>& lock)
 			{
 				exception_ = std::move(p);
 				set_finished(lock);
@@ -162,6 +163,16 @@ namespace daily
 			bool is_valid(std::unique_lock<std::mutex>&) const
 			{
 				return is_valid_;
+			}
+
+			bool has_exception(std::unique_lock<std::mutex>&) const
+			{
+				return exception_ != nullptr;
+			}
+
+			std::exception_ptr get_exception(std::unique_lock<std::mutex>&) const
+			{
+				return exception_;
 			}
 
 			void set_continuation(
@@ -258,6 +269,9 @@ namespace daily
 			Result get(std::unique_lock<std::mutex>& lock)
 			{
 				set_invalid(lock);
+				if(this->has_exception(lock))
+					std::rethrow_exception(this->get_exception(lock));
+
 				return *std::move(result_);
 			}
 
@@ -337,9 +351,9 @@ namespace daily
 
 			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
 			{
-				// At this point we justr unlock the lock because we know one end point
+				// At this point we just unlock the lock because we know one end point
 				// is going away anyway so there's no way to mess up the state.
-				lock.unlock();
+				lock.unlock();				
 			}
 
 			template<typename>
@@ -424,6 +438,8 @@ namespace daily
 			{
 				auto parent_state = this->get_parent_state();
 				this->do_continue(parent_state->get(lock), lock);
+				if(this->has_exception(lock))
+					std::rethrow_exception(this->get_exception(lock));
 			}
 
 			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock) override
@@ -451,6 +467,8 @@ namespace daily
 			{
 				auto parent_state = this->get_parent_state();
 				this->do_continue(parent_state->get(lock), lock);
+				if(this->has_exception(lock))
+					std::rethrow_exception(this->get_exception(lock));
 			}
 
 			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock)
@@ -534,6 +552,15 @@ namespace daily
 		promise(std::allocator_arg_t, Alloc const& alloc)
 			: state_(std::allocate_shared<shared_state>(alloc))
 		{}
+
+		~promise()
+		{
+			if(state_)
+			{
+				auto lk = state_->lock();
+				state_->continuation_end_point_removed(lk);
+			}
+		}
 
 		// move support
 		promise(promise&& other) noexcept
@@ -652,13 +679,7 @@ namespace daily
 
 		~future()
 		{
-			if(state_)
-			{
-				// We need to tell all of the shared states that the end point has
-				// been removed in order to remove the circular shared_ptr references
-				auto lk = lock();
-				state_->continuation_end_point_removed(lk);
-			}
+			cleanup();
 		}
 
 		// move support
@@ -669,8 +690,12 @@ namespace daily
 
 		future& operator=(future&& other) noexcept
 		{
-			state_ = std::move(other.state_);
-			mutex_ = std::move(other.mutex_);
+			if(&other != this)
+			{
+				cleanup();
+				state_ = std::move(other.state_);
+				mutex_ = std::move(other.mutex_);
+			}
 			return *this;
 		}
 
@@ -680,6 +705,7 @@ namespace daily
 
 		Result get()
 		{
+			assert(valid());
 			auto lk = lock();
 			state_->do_wait(lk);
 			return state_->get(lk);
@@ -698,6 +724,7 @@ namespace daily
 
 		void wait() const
 		{
+			assert(valid());
 			auto lk = lock();
 			return state_.wait(lk);
 		}
@@ -705,6 +732,7 @@ namespace daily
 		template <typename Rep, typename Period>
 		future_status wait_for(std::chrono::duration<Rep, Period> const& rel_time) const
 		{
+			assert(valid());
 			auto lk = lock();
 			return state_.wait_for(rel_time, lk);
 		}
@@ -712,6 +740,7 @@ namespace daily
 		template <typename Clock, typename Duration>
 		future_status wait_until(std::chrono::time_point<Clock, Duration> const& abs_time) const
 		{
+			assert(valid());
 			auto lk = lock();
 			return state_.wait_until(abs_time, lk);
 		}
@@ -719,24 +748,28 @@ namespace daily
 		template<typename F>
 		auto then(F&& f)
 		{
+			assert(valid());
 			return this->then(continue_on::any, std::forward<F>(f));
 		}
 
 		template<typename F>
 		auto then(continue_on::any_t a, F&& f)
 		{
+			assert(valid());
 			return continue_on_then(a, std::forward<F>(f));
 		}
 
 		template<typename F>
 		auto then(continue_on::get_t g, F&& f)
 		{
+			assert(valid());
 			return continue_on_then(g, std::forward<F>(f));
 		}
 
 		template<typename F>
 		auto then(continue_on::set_t s, F&& f)
 		{
+			assert(valid());
 			return continue_on_then(s, std::forward<F>(f));
 		}
 
@@ -756,6 +789,17 @@ namespace daily
 			auto lk = lock();
 			current_state->set_continuation(continuation_state, lk);
 			return future<ContinuationResult>(continuation_state, mutex_);
+		}
+
+		void cleanup()
+		{
+			if(state_)
+			{
+				// We need to tell all of the shared states that the end point has
+				// been removed in order to remove the circular shared_ptr references
+				auto lk = lock();
+				state_->continuation_end_point_removed(lk);
+			}
 		}
 
 		std::unique_lock<std::mutex> lock() const
