@@ -500,6 +500,9 @@ BOOST_AUTO_TEST_CASE(future_wait)
 	run_delayed.join();
 }
 
+// The following tests were lifted from 
+// https://github.com/skarupke/compile_time/blob/master/await/then_future.cpp
+// as a few edge cases I missed.
 BOOST_AUTO_TEST_CASE(discard_future)
 {
 	daily::promise<void> promise;
