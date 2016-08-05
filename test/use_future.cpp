@@ -13,10 +13,11 @@
 
 #include <experimental/executor>
 #include <experimental/thread_pool>
+#include <experimental/loop_scheduler>
 
 #include "daily/future/use_future.hpp"
 
-float get_float()
+float get_one()
 {
 	return 1.f;
 }
@@ -26,7 +27,7 @@ BOOST_AUTO_TEST_CASE( future_use_future_basic )
 	std::experimental::thread_pool pool;
 	auto f = std::experimental::dispatch(
 		pool,
-		get_float,
+		get_one,
 		daily::use_future
 	);
 
@@ -41,7 +42,7 @@ BOOST_AUTO_TEST_CASE( future_use_future_throw )
 	std::experimental::thread_pool pool;
 	auto f = std::experimental::dispatch(
 		pool,
-		get_float,
+		get_one,
 		daily::use_future
 	);
 
@@ -67,4 +68,33 @@ BOOST_AUTO_TEST_CASE( future_use_future_throw )
 	}
 	BOOST_TEST_CHECK(exception_caught == true);
 	BOOST_TEST_CHECK(f2.valid() == false);
+}
+
+BOOST_AUTO_TEST_CASE( future_use_future_executor )
+{
+	std::experimental::thread_pool pool;
+	std::experimental::loop_scheduler looper;
+	auto f = std::experimental::dispatch(
+		pool,
+		get_one,
+		daily::use_future
+	);
+
+	BOOST_TEST_CHECK(f.valid() == true);
+	bool has_run = false;
+	f.wait();
+	auto f2 = f.then(
+		daily::execute::dispatch,
+		looper,
+		[&has_run](float f) 
+		{ 
+			return f * 2.f;
+		}
+	);
+
+	BOOST_TEST_CHECK(f.valid() == false);
+	BOOST_TEST_CHECK(has_run == false);
+	looper.run();
+	BOOST_TEST_CHECK(has_run == true);
+	BOOST_TEST_CHECK(f2.get() == 2.f);
 }

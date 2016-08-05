@@ -58,6 +58,13 @@ namespace daily
 		struct set_t {} constexpr set;
 	};
 
+	namespace execute
+	{
+		struct dispatch_t {} constexpr dispatch;
+		struct post_t {} constexpr post;
+		struct defer_t {} constexpr defer;
+	};
+
 	class future_error : public std::logic_error
 	{
 	public:
@@ -176,29 +183,24 @@ namespace daily
 				}
 			}
 
-			std::shared_ptr<future_shared_state_base> const& get_continuation(std::unique_lock<std::mutex>& lock)
-			{
-				return continuation_;
-			}
-
-			void clear_continuation(std::unique_lock<std::mutex>& lock)
-			{
-				continuation_ = nullptr;
-			}
-
-			void do_wait(std::unique_lock<std::mutex>& lock)
+			void do_wait_result(std::unique_lock<std::mutex>& lock)
 			{
 				if(!finished_)
 					continuation_result_requested(lock);
 
-				while(!finished_)
-					ready_wait_.wait(lock);
+				do_wait(lock);
 			}
 
 			void check_exception(std::unique_lock<std::mutex>& lock)
 			{
 				if(exception_)
 					std::rethrow_exception(exception_);
+			}
+			
+			void do_wait(std::unique_lock<std::mutex>& lock)
+			{
+				while(!finished_)
+					ready_wait_.wait(lock);
 			}
 
 			template <typename Rep, typename Period>
@@ -352,10 +354,10 @@ namespace daily
 		};
 
 		template<typename Param, typename Return>
-		struct run_continuation_helper;
+		struct continue_on_continuation_helper;
 
 		template<typename Param, typename Return>
-		struct run_continuation_helper
+		struct continue_on_continuation_helper
 		{
 			template<typename Caller>
 			static void call(
@@ -364,15 +366,17 @@ namespace daily
 			{
 				// Don't call user code with the lock still obtained.
 				lock.unlock();
-				Return current_result = caller->continuation_(caller->get_parent_state()->get(lock));
+				Return current_result = caller->continuation_(caller->parent_->get(lock));
 				lock.lock();
 				// cglover-aug8th_2016: Can an exception leak from here?
 				caller->set_finished_with_result(std::move(current_result), lock);
 			}
 		};
 
+		// ---------------------------------------------------------------------
+		// Basic Continuations.
 		template<typename Return>
-		struct run_continuation_helper<void, Return>
+		struct continue_on_continuation_helper<void, Return>
 		{
 			template<typename Caller>
 			static void call(
@@ -389,7 +393,7 @@ namespace daily
 		};
 
 		template<typename Param>
-		struct run_continuation_helper<Param, void>
+		struct continue_on_continuation_helper<Param, void>
 		{
 			template<typename Caller>
 			static void call(
@@ -398,7 +402,7 @@ namespace daily
 			{
 				// Don't call user code with the lock still obtained.
 				lock.unlock();
-				caller->continuation_(caller->get_parent_state()->get(lock));
+				caller->continuation_(caller->parent_->get(lock));
 				lock.lock();
 				// cglover-aug8th_2016: Can an exception leak from here?
 				caller->set_finished_with_result(lock);
@@ -406,7 +410,7 @@ namespace daily
 		};
 
 		template<>
-		struct run_continuation_helper<void, void>
+		struct continue_on_continuation_helper<void, void>
 		{
 			template<typename Caller>
 			static void call(
@@ -422,8 +426,6 @@ namespace daily
 			}
 		};
 
-		// ---------------------------------------------------------------------
-		// Basic Continuations.
 		template<typename ParentResult, typename Result, typename Function>
 		class continue_on_basic_shared_state : public future_shared_state<Result>
 		{
@@ -441,18 +443,13 @@ namespace daily
 		protected:
 			
 			template<typename Param, typename Return>
-			friend struct run_continuation_helper;
+			friend struct continue_on_continuation_helper;
 
-			future_shared_state<ParentResult>* get_parent_state()
-			{
-				return parent_;
-			}
-		
 			void do_continue(std::unique_lock<std::mutex>& lock)
 			{
 				BOOST_TRY
 				{
-					run_continuation_helper<ParentResult, Result>::call(this, lock);
+					continue_on_continuation_helper<ParentResult, Result>::call(this, lock);
 				}
 				BOOST_CATCH(...)
 				{
@@ -488,14 +485,12 @@ namespace daily
 
 			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
 			{
-				auto parent_state = this->get_parent_state();
 				this->do_continue(lock);
 				this->check_exception(lock);
 			}
 
 			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock) override
 			{
-				auto parent_state = this->get_parent_state();
 				this->do_continue(lock);
 			}
 		};
@@ -516,15 +511,13 @@ namespace daily
 
 			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
 			{
-				auto parent_state = this->get_parent_state();
 				this->do_continue(lock);
 				this->check_exception(lock);
 			}
 
 			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock)
 			{
-				auto parent_state = this->get_parent_state();
-				parent_state->continuation_result_requested(lock);
+				this->parent_->continuation_result_requested(lock);
 			}
 		};
 
@@ -544,8 +537,7 @@ namespace daily
 
 			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock) override
 			{
-				auto parent_state = this->get_parent_state();
-				parent_state->continuation_result_requested(lock);
+				this->parent_->continuation_result_requested(lock);
 				this->do_continue(lock);
 			}
 		};
@@ -584,6 +576,217 @@ namespace daily
 				continue_on_set_shared_state<ParentResult, Result, Function>
 			>(parent, std::forward<Function>(func));
 		}
+
+		// ---------------------------------------------------------------------
+		// Executor Continuations.
+		struct submit_dispatch
+		{
+			template<typename Executor, typename Closure>
+			static void submit(Executor ex, Closure&& c)
+			{
+				// cglover-todo: Pass an allocator through.
+				ex.dispatch(std::forward<Closure>(c), std::allocator<void>());
+			}
+		};
+
+		struct submit_post
+		{
+			template<typename Executor, typename Closure>
+			static void submit(Executor ex, Closure&& c)
+			{
+				// cglover-todo: Pass an allocator through.
+				ex.post(std::forward<Closure>(c), std::allocator<void>());
+			}
+		};
+
+		struct submit_defer
+		{
+			template<typename Executor, typename Closure>
+			static void submit(Executor ex, Closure&& c)
+			{
+				// cglover-todo: Pass an allocator through.
+				ex.defer(std::forward<Closure>(c), std::allocator<void>());
+			}
+		};
+
+		template<typename Submiter, typename Param, typename Return>
+		struct executor_continuation_helper;
+
+		template<typename Submiter, typename Param, typename Return>
+		struct executor_continuation_helper
+		{
+			template<typename Caller>
+			static void call(
+				std::shared_ptr<Caller> caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				auto closure = [caller, p = caller->parent_->get(lock), m = lock.mutex()]
+				{
+					// Don't call user code with the lock still obtained.
+					auto result = caller->continuation_(std::move(p));
+					std::unique_lock<std::mutex> lock(*m);
+					caller->set_finished_with_result(std::move(result), lock);
+				};
+				
+				lock.unlock();
+				Submiter::submit(caller->executor_, std::move(closure));
+				lock.lock();
+			}
+		};
+
+		template<typename Submiter, typename Return>
+		struct executor_continuation_helper<Submiter, void, Return>
+		{
+			template<typename Caller>
+			static void call(
+				std::shared_ptr<Caller> caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				auto closure = [caller, m = lock.mutex()]
+				{
+					// Don't call user code with the lock still obtained.
+					auto result = caller->continuation_();
+					std::unique_lock<std::mutex> lock(*m);
+					caller->set_finished_with_result(std::move(result), lock);
+				};
+				
+				lock.unlock();
+				Submiter::submit(caller->executor_, std::move(closure));
+				lock.lock();
+			}
+		};
+
+		template<typename Submiter, typename Param>
+		struct executor_continuation_helper<Submiter, Param, void>
+		{
+			template<typename Caller>
+			static void call(
+				std::shared_ptr<Caller> caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				auto closure = [caller, p = caller->parent_->get(lock), m = lock.mutex()]
+				{
+					// Don't call user code with the lock still obtained.
+					caller->continuation_(std::move(p));
+					std::unique_lock<std::mutex> lock(*m);
+					caller->set_finished_with_result(lock);
+				};
+				
+				lock.unlock();
+				Submiter::submit(caller->executor_, std::move(closure));
+				lock.lock();
+			}
+		};
+
+		template<typename Submiter>
+		struct executor_continuation_helper<Submiter, void, void>
+		{
+			template<typename Caller>
+			static void call(
+				std::shared_ptr<Caller> caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				auto closure = [caller, m = lock.mutex()]
+				{
+					// Don't call user code with the lock still obtained.
+					caller->continuation_();
+					std::unique_lock<std::mutex> lock(m);
+					caller->set_finished_with_result(lock);
+				};
+				
+				lock.unlock();
+				Submiter::submit(caller->executor_, closure);
+				lock.lock();
+			}
+		};
+
+		template<
+			  typename Submitter
+			, typename Executor
+			, typename ParentResult
+			, typename Result
+			, typename Function>
+		class executor_continuation_shared_state 
+			: public future_shared_state<Result>
+			, public std::enable_shared_from_this<
+				executor_continuation_shared_state<
+					Submitter, Executor, ParentResult, Result, Function
+				>
+			>
+		{
+		public:
+
+			executor_continuation_shared_state(
+				Executor ex,
+				future_shared_state<ParentResult>* parent,
+				Function&& f)
+				: parent_(std::move(parent))
+				, executor_(ex)
+				, continuation_(std::move(f))
+			{}
+			
+		private:
+
+			template<typename, typename, typename>
+			friend struct executor_continuation_helper;
+
+			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
+			{
+				executor_continuation_helper<
+					Submitter, ParentResult, Result
+				>::call(this->shared_from_this(), lock);
+			}
+			
+			// Don't store a shared_ptr here because as long as we're alive the parent
+			// must be too.
+			future_shared_state<ParentResult>* parent_;
+			Executor executor_;
+			Function continuation_;
+		};
+
+		// ---------------------------------------------------------------------
+		//
+		template<typename Result, typename Executor, typename ParentResult, typename Function>
+		auto make_executor_continuation(
+			execute::dispatch_t,
+			Executor ex,
+			future_shared_state<ParentResult>* parent, 
+			Function&& func)
+		{
+			return std::make_shared<
+				executor_continuation_shared_state<
+					submit_dispatch, Executor, ParentResult, Result, Function
+				>
+			>(std::move(ex), parent, std::forward<Function>(func));
+		}
+
+		template<typename Result, typename Executor, typename ParentResult, typename Function>
+		auto make_executor_continuation(
+			execute::post_t, 
+			Executor ex,
+			future_shared_state<ParentResult>* parent, 
+			Function&& func)
+		{
+			return std::make_shared<
+				executor_continuation_shared_state<
+					submit_post, Executor, ParentResult, Result, Function
+				>
+			>(std::move(ex), parent, std::forward<Function>(func));
+		}
+
+		template<typename Result, typename Executor, typename ParentResult, typename Function>
+		auto make_executor_continuation(
+			execute::defer_t, 
+			Executor ex,
+			future_shared_state<ParentResult>* parent,
+			Function&& func)
+		{
+			return std::make_shared<
+				executor_continuation_shared_state<
+					submit_defer, Executor, ParentResult, Result, Function
+				>
+			>(std::move(ex), parent, std::forward<Function>(func));
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -614,7 +817,9 @@ namespace daily
 				{
 					BOOST_TRY
 					{
-						BOOST_THROW_EXCEPTION(future_error(future_errc::broken_promise));
+						BOOST_THROW_EXCEPTION(
+							future_error(future_errc::broken_promise)
+						);
 					}
 					BOOST_CATCH(...)
 					{
@@ -771,7 +976,7 @@ namespace daily
 		{
 			assert(valid());
 			auto lk = lock();
-			state_->do_wait(lk);
+			state_->do_wait_result(lk);
 			return state_->get(lk);
 		}
 
@@ -790,7 +995,7 @@ namespace daily
 		{
 			assert(valid());
 			auto lk = lock();
-			return state_.wait(lk);
+			state_->do_wait(lk);
 		}
 
 		template <typename Rep, typename Period>
@@ -798,7 +1003,7 @@ namespace daily
 		{
 			assert(valid());
 			auto lk = lock();
-			return state_.wait_for(rel_time, lk);
+			return state_.do_wait_for(rel_time, lk);
 		}
 
 		template <typename Clock, typename Duration>
@@ -806,7 +1011,7 @@ namespace daily
 		{
 			assert(valid());
 			auto lk = lock();
-			return state_.wait_until(abs_time, lk);
+			return state_.do_wait_until(abs_time, lk);
 		}
 
 		template<typename F>
@@ -837,6 +1042,27 @@ namespace daily
 			return continue_on_then(s, std::forward<F>(f));
 		}
 
+		template<typename Executor, typename F>
+		auto then(execute::dispatch_t d, Executor& ex, F&& f)
+		{
+			assert(valid());
+			return executor_then(d, ex, std::forward<F>(f));
+		}
+
+		template<typename Executor, typename F>
+		auto then(execute::post_t p, Executor& ex, F&& f)
+		{
+			assert(valid());
+			return executor_then(p, ex, std::forward<F>(f));
+		}
+
+		template<typename Executor, typename F>
+		auto then(execute::defer_t d, Executor& ex, F&& f)
+		{
+			assert(valid());
+			return executor_then(d, ex, std::forward<F>(f));
+		}
+
 	private:
 
 		template<typename Function, typename Param>
@@ -852,8 +1078,7 @@ namespace daily
 		struct result_of<Function, void>
 		{
 			typedef decltype(std::declval<Function>()()) type;
-		};
-		
+		};		
 
 		template<typename Selector, typename F>
 		auto continue_on_then(Selector s, F&& f)
@@ -866,6 +1091,23 @@ namespace daily
 			auto continuation_state = detail::make_continue_on_continuation<
 											ContinuationResult
 									>(s, current_state.get(), std::forward<F>(f));
+
+			auto lk = lock();
+			current_state->set_continuation(continuation_state, lk);
+			return future<ContinuationResult>(continuation_state, mutex_);
+		}
+
+		template<typename Selector, typename Executor, typename F>
+		auto executor_then(Selector s, Executor& ex, F&& f)
+		{
+			typedef typename result_of<F, Result>::type ContinuationResult;
+
+			// 'this' future is now invalidated so we move the state out
+			// to indicate that.
+			auto current_state = std::move(state_);
+			auto continuation_state = detail::make_executor_continuation<
+											ContinuationResult
+									>(s, ex.get_executor(), current_state.get(), std::forward<F>(f));
 
 			auto lk = lock();
 			current_state->set_continuation(continuation_state, lk);
