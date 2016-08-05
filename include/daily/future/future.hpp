@@ -617,14 +617,15 @@ namespace daily
 		{
 			template<typename Caller>
 			static void call(
-				std::shared_ptr<Caller> caller,
-				std::unique_lock<std::mutex>& lock)
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock,
+				std::shared_ptr<std::mutex>& promise_mutex)
 			{
-				auto closure = [caller, p = caller->parent_->get(lock), m = lock.mutex()]
+				auto closure = [caller, p = caller->parent_->get(lock), promise_mutex]
 				{
 					// Don't call user code with the lock still obtained.
 					auto result = caller->continuation_(std::move(p));
-					std::unique_lock<std::mutex> lock(*m);
+					std::unique_lock<std::mutex> lock(*promise_mutex);
 					caller->set_finished_with_result(std::move(result), lock);
 				};
 				
@@ -639,14 +640,15 @@ namespace daily
 		{
 			template<typename Caller>
 			static void call(
-				std::shared_ptr<Caller> caller,
-				std::unique_lock<std::mutex>& lock)
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock,
+				std::shared_ptr<std::mutex>& promise_mutex)
 			{
-				auto closure = [caller, m = lock.mutex()]
+				auto closure = [caller, promise_mutex]
 				{
 					// Don't call user code with the lock still obtained.
 					auto result = caller->continuation_();
-					std::unique_lock<std::mutex> lock(*m);
+					std::unique_lock<std::mutex> lock(*promise_mutex);
 					caller->set_finished_with_result(std::move(result), lock);
 				};
 				
@@ -661,14 +663,15 @@ namespace daily
 		{
 			template<typename Caller>
 			static void call(
-				std::shared_ptr<Caller> caller,
-				std::unique_lock<std::mutex>& lock)
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock,
+				std::shared_ptr<std::mutex>& promise_mutex)
 			{
-				auto closure = [caller, p = caller->parent_->get(lock), m = lock.mutex()]
+				auto closure = [caller, p = caller->parent_->get(lock), promise_mutex]
 				{
 					// Don't call user code with the lock still obtained.
 					caller->continuation_(std::move(p));
-					std::unique_lock<std::mutex> lock(*m);
+					std::unique_lock<std::mutex> lock(*promise_mutex);
 					caller->set_finished_with_result(lock);
 				};
 				
@@ -683,14 +686,15 @@ namespace daily
 		{
 			template<typename Caller>
 			static void call(
-				std::shared_ptr<Caller> caller,
-				std::unique_lock<std::mutex>& lock)
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock,
+				std::shared_ptr<std::mutex>& promise_mutex)
 			{
-				auto closure = [caller, m = lock.mutex()]
+				auto closure = [caller, promise_mutex]
 				{
 					// Don't call user code with the lock still obtained.
 					caller->continuation_();
-					std::unique_lock<std::mutex> lock(m);
+					std::unique_lock<std::mutex> lock(*promise_mutex);
 					caller->set_finished_with_result(lock);
 				};
 				
@@ -708,21 +712,18 @@ namespace daily
 			, typename Function>
 		class executor_continuation_shared_state 
 			: public future_shared_state<Result>
-			, public std::enable_shared_from_this<
-				executor_continuation_shared_state<
-					Submitter, Executor, ParentResult, Result, Function
-				>
-			>
 		{
 		public:
 
 			executor_continuation_shared_state(
 				Executor ex,
 				future_shared_state<ParentResult>* parent,
-				Function&& f)
+				Function&& f,
+				std::shared_ptr<std::mutex> mutex)
 				: parent_(std::move(parent))
 				, executor_(ex)
 				, continuation_(std::move(f))
+				, promise_mutex_(std::move(mutex))
 			{}
 			
 		private:
@@ -732,9 +733,14 @@ namespace daily
 
 			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
 			{
+				assert(lock.mutex() == promise_mutex_.get());
+
+				// We don't need to store a shared ptr to this state here
+				// because the shared_ptr to the promise mutex will keep the
+				// whole chain alive.
 				executor_continuation_helper<
 					Submitter, ParentResult, Result
-				>::call(this->shared_from_this(), lock);
+				>::call(this, lock, promise_mutex_);
 			}
 			
 			// Don't store a shared_ptr here because as long as we're alive the parent
@@ -742,6 +748,7 @@ namespace daily
 			future_shared_state<ParentResult>* parent_;
 			Executor executor_;
 			Function continuation_;
+			std::shared_ptr<std::mutex> promise_mutex_;
 		};
 
 		// ---------------------------------------------------------------------
@@ -751,13 +758,14 @@ namespace daily
 			execute::dispatch_t,
 			Executor ex,
 			future_shared_state<ParentResult>* parent, 
-			Function&& func)
+			Function&& func,
+			std::shared_ptr<std::mutex> mutex)
 		{
 			return std::make_shared<
 				executor_continuation_shared_state<
 					submit_dispatch, Executor, ParentResult, Result, Function
 				>
-			>(std::move(ex), parent, std::forward<Function>(func));
+			>(std::move(ex), parent, std::forward<Function>(func), std::move(mutex));
 		}
 
 		template<typename Result, typename Executor, typename ParentResult, typename Function>
@@ -1107,7 +1115,7 @@ namespace daily
 			auto current_state = std::move(state_);
 			auto continuation_state = detail::make_executor_continuation<
 											ContinuationResult
-									>(s, ex.get_executor(), current_state.get(), std::forward<F>(f));
+									>(s, ex.get_executor(), current_state.get(), std::forward<F>(f), mutex_);
 
 			auto lk = lock();
 			current_state->set_continuation(continuation_state, lk);

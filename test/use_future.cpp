@@ -88,6 +88,7 @@ BOOST_AUTO_TEST_CASE( future_use_future_executor )
 		looper,
 		[&has_run](float f) 
 		{ 
+			has_run = true;
 			return f * 2.f;
 		}
 	);
@@ -97,4 +98,33 @@ BOOST_AUTO_TEST_CASE( future_use_future_executor )
 	looper.run();
 	BOOST_TEST_CHECK(has_run == true);
 	BOOST_TEST_CHECK(f2.get() == 2.f);
+}
+
+BOOST_AUTO_TEST_CASE( future_use_future_stress )
+{
+	std::experimental::thread_pool pool;
+	int count = 10000;
+	std::atomic<float> result(10000);
+	while(count--)
+	{
+		auto f = std::experimental::dispatch(
+			pool,
+			get_one,
+			daily::use_future
+		);
+
+		f.then(
+			daily::execute::dispatch,
+			pool,
+			[&result](float f) 
+			{ 
+				auto current = result.load();
+				while (!result.compare_exchange_weak(current, current - f))
+					;
+			}
+		);
+	}
+
+	pool.join();
+	BOOST_TEST_CHECK(result.load() == 0.f);
 }
