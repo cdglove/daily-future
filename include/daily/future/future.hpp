@@ -67,7 +67,7 @@ namespace daily
 			, error_(err)
 		{}
 
-		future_errc code()
+		future_errc code() const
 		{
 			return error_;
 		}
@@ -165,16 +165,6 @@ namespace daily
 				return is_valid_;
 			}
 
-			bool has_exception(std::unique_lock<std::mutex>&) const
-			{
-				return exception_ != nullptr;
-			}
-
-			std::exception_ptr get_exception(std::unique_lock<std::mutex>&) const
-			{
-				return exception_;
-			}
-
 			void set_continuation(
 				std::shared_ptr<future_shared_state_base> continuation, 
 				std::unique_lock<std::mutex>& lock)
@@ -182,8 +172,18 @@ namespace daily
 				continuation_ = std::move(continuation);
 				if(finished_)
 				{
-					continuation_result_requested(lock);
+					continuation_->continuation_result_ready(lock);
 				}
+			}
+
+			std::shared_ptr<future_shared_state_base> const& get_continuation(std::unique_lock<std::mutex>& lock)
+			{
+				return continuation_;
+			}
+
+			void clear_continuation(std::unique_lock<std::mutex>& lock)
+			{
+				continuation_ = nullptr;
 			}
 
 			void do_wait(std::unique_lock<std::mutex>& lock)
@@ -193,6 +193,12 @@ namespace daily
 
 				while(!finished_)
 					ready_wait_.wait(lock);
+			}
+
+			void check_exception(std::unique_lock<std::mutex>& lock)
+			{
+				if(exception_)
+					std::rethrow_exception(exception_);
 			}
 
 			template <typename Rep, typename Period>
@@ -269,9 +275,7 @@ namespace daily
 			Result get(std::unique_lock<std::mutex>& lock)
 			{
 				set_invalid(lock);
-				if(this->has_exception(lock))
-					std::rethrow_exception(this->get_exception(lock));
-
+				this->check_exception(lock);
 				return *std::move(result_);
 			}
 
@@ -297,8 +301,8 @@ namespace daily
 
 			void get(std::unique_lock<std::mutex>& lock)
 			{
-				do_wait(lock);
 				set_invalid(lock);
+				this->check_exception(lock);
 			}
 		};
 
@@ -324,8 +328,8 @@ namespace daily
 
 			Result& get(std::unique_lock<std::mutex>& lock)
 			{
-				do_wait(lock);
 				set_invalid(lock);
+				this->check_exception(lock);
 				return *result_;
 			}
 
@@ -342,24 +346,132 @@ namespace daily
 		{
 		public:
 
+			promise_future_shared_state()
+				: end_point_count_(1)
+			{}
+
 			std::unique_lock<std::mutex> lock() const
 			{
 				return std::unique_lock<std::mutex>(mutex_);
+			}
+
+			void add_end_point(std::unique_lock<std::mutex>& lock)
+			{
+				++end_point_count_;
+				assert(end_point_count_ <= 2);
+			}
+
+			void remove_end_point(std::unique_lock<std::mutex>& lock)
+			{
+				--end_point_count_;
+				assert(end_point_count_ >= 0);
+
+				// Remove the circular shared ptrs.
+				if(end_point_count_ == 0)
+				{
+					auto next = this->get_continuation(lock);
+					this->clear_continuation(lock);
+
+					std::shared_ptr<future_shared_state_base> current;
+					if(next)
+						current = next->get_continuation(lock);
+
+					while(current)
+					{
+						next = current->get_continuation(lock);
+						current->clear_continuation(lock);
+						current = next;
+					}
+				}
+
+				// At this point we just unlock the lock because we know one end point
+				// is going away anyway so there's no way to mess up the state.
+				lock.unlock();		
 			}
 
 		private:
 
 			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
 			{
-				// At this point we just unlock the lock because we know one end point
-				// is going away anyway so there's no way to mess up the state.
-				lock.unlock();				
+				remove_end_point(lock);		
 			}
-
+		
 			template<typename>
 			friend class promise;
 
 			mutable std::mutex mutex_;
+			int end_point_count_;
+		};
+
+		template<typename Param, typename Return>
+		struct run_continuation_helper;
+
+		template<typename Param, typename Return>
+		struct run_continuation_helper
+		{
+			template<typename Caller>
+			static void call(
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				// Don't call user code with the lock still obtained.
+				lock.unlock();
+				Return current_result = caller->continuation_(caller->get_parent_state()->get(lock));
+				lock.lock();
+				// cglover-aug8th_2016: Can an exception leak from here?
+				caller->set_finished_with_result(std::move(current_result), lock);
+			}
+		};
+
+		template<typename Return>
+		struct run_continuation_helper<void, Return>
+		{
+			template<typename Caller>
+			static void call(
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				// Don't call user code with the lock still obtained.
+				lock.unlock();
+				Return current_result = caller->continuation_();
+				lock.lock();
+				// cglover-aug8th_2016: Can an exception leak from here?
+				caller->set_finished_with_result(std::move(current_result), lock);
+			}
+		};
+
+		template<typename Param>
+		struct run_continuation_helper<Param, void>
+		{
+			template<typename Caller>
+			static void call(
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				// Don't call user code with the lock still obtained.
+				lock.unlock();
+				caller->continuation_(caller->get_parent_state()->get(lock));
+				lock.lock();
+				// cglover-aug8th_2016: Can an exception leak from here?
+				caller->set_finished_with_result(lock);
+			}
+		};
+
+		template<>
+		struct run_continuation_helper<void, void>
+		{
+			template<typename Caller>
+			static void call(
+				Caller* caller,
+				std::unique_lock<std::mutex>& lock)
+			{
+				// Don't call user code with the lock still obtained.
+				lock.unlock();
+				caller->continuation_();
+				lock.lock();
+				// cglover-aug8th_2016: Can an exception leak from here?
+				caller->set_finished_with_result(lock);
+			}
 		};
 
 		// ---------------------------------------------------------------------
@@ -379,30 +491,25 @@ namespace daily
 			~continue_on_basic_shared_state() = 0;
 			
 		protected:
+			
+			template<typename Param, typename Return>
+			friend struct run_continuation_helper;
 
 			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
 			{
-				// Move the parent into a local while we have the lock because
-				// once we call continuation_end_point_removed we might not have the lock anymore.
-				auto keep_alive = std::move(parent_);
-				keep_alive->continuation_end_point_removed(lock);
+				parent_->continuation_end_point_removed(lock);
 			}
 
 			future_shared_state<ParentResult>* get_parent_state()
 			{
 				return parent_.get();
 			}
-
-			void do_continue(ParentResult&& result_to_forward, std::unique_lock<std::mutex>& lock)
+		
+			void do_continue(std::unique_lock<std::mutex>& lock)
 			{
 				BOOST_TRY
 				{
-					// Don't call user code with the lock still obtained.
-					lock.unlock();
-					Result current_result = continuation_(std::move(result_to_forward));
-					lock.lock();
-					// cglover-aug8th_2016: Can an exception leak from here?
-					this->set_finished_with_result(std::move(current_result), lock);
+					run_continuation_helper<ParentResult, Result>::call(this, lock);
 				}
 				BOOST_CATCH(...)
 				{
@@ -437,15 +544,14 @@ namespace daily
 			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
 			{
 				auto parent_state = this->get_parent_state();
-				this->do_continue(parent_state->get(lock), lock);
-				if(this->has_exception(lock))
-					std::rethrow_exception(this->get_exception(lock));
+				this->do_continue(lock);
+				this->check_exception(lock);
 			}
 
 			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock) override
 			{
 				auto parent_state = this->get_parent_state();
-				this->do_continue(parent_state->get(lock), lock);
+				this->do_continue(lock);
 			}
 		};
 
@@ -466,9 +572,8 @@ namespace daily
 			void handle_continuation_result_ready(std::unique_lock<std::mutex>& lock) override
 			{
 				auto parent_state = this->get_parent_state();
-				this->do_continue(parent_state->get(lock), lock);
-				if(this->has_exception(lock))
-					std::rethrow_exception(this->get_exception(lock));
+				this->do_continue(lock);
+				this->check_exception(lock);
 			}
 
 			void handle_continuation_result_requested(std::unique_lock<std::mutex>& lock)
@@ -496,7 +601,7 @@ namespace daily
 			{
 				auto parent_state = this->get_parent_state();
 				parent_state->continuation_result_requested(lock);
-				this->do_continue(parent_state->get(lock), lock);
+				this->do_continue(lock);
 			}
 		};
 
@@ -536,7 +641,9 @@ namespace daily
 		}
 	}
 
-	template<typename Result>
+	// -------------------------------------------------------------------------
+	//
+	template<typename Result = void>
 	class promise
 	{
 	private:
@@ -558,7 +665,27 @@ namespace daily
 			if(state_)
 			{
 				auto lk = state_->lock();
-				state_->continuation_end_point_removed(lk);
+				if(future_obtained_ && !state_->is_finished(lk))
+				{
+					BOOST_TRY
+					{
+						BOOST_THROW_EXCEPTION(future_error(future_errc::broken_promise));
+					}
+					BOOST_CATCH(...)
+					{
+						BOOST_TRY
+						{
+							state_->set_finished_with_exception(std::current_exception(), lk);
+						}
+						// Don't let exceptions escape from the dtor.
+						BOOST_CATCH(...)
+						{}
+						BOOST_CATCH_END
+					}
+					BOOST_CATCH_END
+				}
+
+				state_->remove_end_point(lk);
 			}
 		}
 
@@ -596,6 +723,8 @@ namespace daily
 			}
 
 			future_obtained_ = true;
+			auto lk = state_->lock();
+			state_->add_end_point(lk);
 			return future<Result>(state_, &state_->mutex_);
 		}
 
@@ -663,7 +792,7 @@ namespace daily
 
 	// -------------------------------------------------------------------------
 	//
-	template<typename Result>
+	template<typename Result = void>
 	class future
 	{
 	private:
@@ -775,10 +904,26 @@ namespace daily
 
 	private:
 
+		template<typename Function, typename Param>
+		struct result_of;
+
+		template<typename Function, typename Param>
+		struct result_of
+		{
+			typedef decltype(std::declval<Function>()(std::declval<Param>())) type;
+		};
+
+		template<typename Function>
+		struct result_of<Function, void>
+		{
+			typedef decltype(std::declval<Function>()()) type;
+		};
+		
+
 		template<typename Selector, typename F>
 		auto continue_on_then(Selector s, F&& f)
 		{
-			typedef decltype(f(std::declval<Result>())) ContinuationResult;
+			typedef typename result_of<F, Result>::type ContinuationResult;
 
 			// Copy the current state shared_ptr to keep it around afer the move.
 			auto current_state = state_.get();

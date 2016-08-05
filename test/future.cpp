@@ -191,6 +191,16 @@ BOOST_AUTO_TEST_CASE( future_continuation_noncircular )
 	daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); });
 }
 
+BOOST_AUTO_TEST_CASE( future_continuation_void )
+{
+	daily::promise<void> p;
+	daily::future<void> f = p.get_future();
+	daily::future<int> f2 = f.then([] { return 2; });
+	BOOST_TEST_CHECK(f2.valid() == true);
+	BOOST_TEST_CHECK(f.valid() == false);
+	daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); });
+}
+
 BOOST_AUTO_TEST_CASE( future_any_continuation )
 {
 	daily::promise<float> p;
@@ -355,34 +365,34 @@ BOOST_AUTO_TEST_CASE( future_set_get_chain_continuation )
 	BOOST_TEST_CHECK(f3.get() == 4);
 	BOOST_TEST_CHECK(get_ran == true);
 }
-//
-////BOOST_AUTO_TEST_CASE( future_multithread )
-////{
-////	boost::executors::thread_executor pool;
-////	int repeat = 10000;
-////	while(repeat--)
-////	{
-////		daily::promise<float> p;
-////		daily::future<float> f = p.get_future();
-////		pool.submit([&p, repeat] { p.set_value((float)repeat); });
-////		BOOST_TEST_CHECK(f.get() == repeat);
-////	}	
-////}
-////
-////BOOST_AUTO_TEST_CASE( future_multithread_get_continuation )
-////{
-////	boost::executors::thread_executor pool;
-////	int repeat = 10000;
-////	while(repeat--)
-////	{
-////		daily::promise<int> p;
-////		daily::future<int> f = p.get_future();
-////		pool.submit([&p, repeat] { p.set_value(repeat); });
-////		auto f2 = f.then(daily::continue_on::get, [](int v) { return v * 2; });
-////		BOOST_TEST_CHECK(f2.get() == (2 * repeat));
-////	}	
-////}
-//
+
+BOOST_AUTO_TEST_CASE( future_multithread )
+{
+	boost::executors::thread_executor pool;
+	int repeat = 100;
+	while(repeat--)
+	{
+		daily::promise<float> p;
+		daily::future<float> f = p.get_future();
+		pool.submit([&p, repeat] { p.set_value((float)repeat); });
+		BOOST_TEST_CHECK(f.get() == repeat);
+	}	
+}
+
+BOOST_AUTO_TEST_CASE( future_multithread_get_continuation )
+{
+	boost::executors::thread_executor pool;
+	int repeat = 100;
+	while(repeat--)
+	{
+		daily::promise<int> p;
+		daily::future<int> f = p.get_future();
+		pool.submit([&p, repeat] { p.set_value(repeat); });
+		auto f2 = f.then(daily::continue_on::get, [](int v) { return v * 2; });
+		BOOST_TEST_CHECK(f2.get() == (2 * repeat));
+	}	
+}
+
 BOOST_AUTO_TEST_CASE( promise_future_get_throws )
 {
 	// We don't need to test each specialization here because
@@ -414,7 +424,6 @@ BOOST_AUTO_TEST_CASE( promise_future_get_throws )
 	BOOST_TEST_CHECK(exception_caught == true);
 	BOOST_TEST_CHECK(f.valid() == false);
 }
-
 
 BOOST_AUTO_TEST_CASE( promise_future_get_continuation_throws )
 {
@@ -476,4 +485,79 @@ BOOST_AUTO_TEST_CASE( promise_future_set_continuation_throws )
 		exception_caught = true;
 	}
 	BOOST_TEST_CHECK(exception_caught == true);
+}
+
+BOOST_AUTO_TEST_CASE(future_wait)
+{
+	daily::promise<int> promise;
+	daily::future<int> future = promise.get_future();
+	std::thread run_delayed([&]
+	{
+		promise.set_value(5);
+	});
+	BOOST_TEST_CHECK(5 == future.get());
+	run_delayed.join();
+}
+
+BOOST_AUTO_TEST_CASE(discard_future)
+{
+	daily::promise<void> promise;
+	bool ran = false;
+	promise.get_future().then([&ran](){ ran = true; });
+	promise.set_value();
+	BOOST_TEST_CHECK(ran == true);
+}
+
+BOOST_AUTO_TEST_CASE(discard_promise)
+{
+	daily::future<void> future = daily::promise<void>().get_future();
+	bool thrown = false;
+	try
+	{
+		future.get();
+	}
+	catch(const daily::future_error& error)
+	{
+		thrown = true;
+		BOOST_TEST_CHECK((int)daily::future_errc::broken_promise == (int)error.code());
+	}
+	BOOST_TEST_CHECK(thrown == true);
+}
+
+BOOST_AUTO_TEST_CASE(discard_both)
+{
+	daily::promise<void>().get_future().then([](){});
+}
+
+BOOST_AUTO_TEST_CASE(set_before_get)
+{
+	daily::promise<void> promise;
+	promise.set_value();
+	bool ran = false;
+	promise.get_future().then([&ran](){ ran = true; });
+	BOOST_TEST_CHECK(ran == true);
+}
+
+struct MovableFunctor
+{
+	MovableFunctor()
+		: a(new int(5))
+	{}
+
+	int operator()()
+	{
+		return *a;
+	}
+
+	std::unique_ptr<int> a;
+};
+
+// this test is here mainly to ensure that the code
+// compiles with functors that are movable only
+BOOST_AUTO_TEST_CASE(daily_future_movable)
+{
+	daily::promise<void> promise;
+	daily::future<int> future = promise.get_future().then(MovableFunctor());
+	promise.set_value();
+	BOOST_TEST_CHECK(5 == future.get());
 }
