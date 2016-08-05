@@ -14,7 +14,7 @@ find_package(Boost
 )
 
 clone_external_git_repo(
-	URL "git@github.com:chriskohlhoff/executors.git"
+	URL "https://github.com/chriskohlhoff/executors.git"
 	TAG "master"
 	TARGET_DIR "${CMAKE_BINARY_DIR}/executors")
 

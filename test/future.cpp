@@ -18,6 +18,7 @@
 #include <boost/mpl/vector.hpp>
 #include <boost/thread/executors/thread_executor.hpp>
 #include "daily/future/future.hpp"
+#include <thread>
 
 template<typename T>
 struct make_future

@@ -230,11 +230,6 @@ namespace daily
 				handle_continuation_result_requested(lock);
 			}
 
-			void continuation_end_point_removed(std::unique_lock<std::mutex>& lock)
-			{
-				handle_continuation_end_point_removed(lock);
-			}
-
 		private:
 
 			// Only implemented by continuation derived shared_state types
@@ -246,9 +241,6 @@ namespace daily
 				while(!finished_)
 					ready_wait_.wait(lock);
 			}
-
-			virtual void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock)
-			{}
 
 			std::exception_ptr exception_;
 			std::condition_variable ready_wait_;
@@ -285,7 +277,7 @@ namespace daily
 		};
 
 		// -------------------------------------------------------------------------
-		// Base shared state used by all dreived shares states -- adds the result 
+		// Base shared state used by all derived shares states -- adds the result 
 		// with a void specialization.
 		template<>
 		class future_shared_state<void> : public future_shared_state_base
@@ -346,61 +338,17 @@ namespace daily
 		{
 		public:
 
-			promise_future_shared_state()
-				: end_point_count_(1)
-			{}
-
 			std::unique_lock<std::mutex> lock() const
 			{
 				return std::unique_lock<std::mutex>(mutex_);
 			}
 
-			void add_end_point(std::unique_lock<std::mutex>& lock)
-			{
-				++end_point_count_;
-				assert(end_point_count_ <= 2);
-			}
-
-			void remove_end_point(std::unique_lock<std::mutex>& lock)
-			{
-				--end_point_count_;
-				assert(end_point_count_ >= 0);
-
-				// Remove the circular shared ptrs.
-				if(end_point_count_ == 0)
-				{
-					auto next = this->get_continuation(lock);
-					this->clear_continuation(lock);
-
-					std::shared_ptr<future_shared_state_base> current;
-					if(next)
-						current = next->get_continuation(lock);
-
-					while(current)
-					{
-						next = current->get_continuation(lock);
-						current->clear_continuation(lock);
-						current = next;
-					}
-				}
-
-				// At this point we just unlock the lock because we know one end point
-				// is going away anyway so there's no way to mess up the state.
-				lock.unlock();		
-			}
-
 		private:
 
-			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
-			{
-				remove_end_point(lock);		
-			}
-		
 			template<typename>
 			friend class promise;
 
 			mutable std::mutex mutex_;
-			int end_point_count_;
 		};
 
 		template<typename Param, typename Return>
@@ -482,7 +430,7 @@ namespace daily
 		public:
 
 			continue_on_basic_shared_state(
-				std::shared_ptr<future_shared_state<ParentResult>>&& parent,
+				future_shared_state<ParentResult>* parent,
 				Function&& f)
 				: parent_(std::move(parent))
 				, continuation_(std::move(f))
@@ -495,14 +443,9 @@ namespace daily
 			template<typename Param, typename Return>
 			friend struct run_continuation_helper;
 
-			void handle_continuation_end_point_removed(std::unique_lock<std::mutex>& lock) override
-			{
-				parent_->continuation_end_point_removed(lock);
-			}
-
 			future_shared_state<ParentResult>* get_parent_state()
 			{
-				return parent_.get();
+				return parent_;
 			}
 		
 			void do_continue(std::unique_lock<std::mutex>& lock)
@@ -519,7 +462,9 @@ namespace daily
 				BOOST_CATCH_END
 			}
 
-			std::shared_ptr<future_shared_state<ParentResult>> parent_;
+			// Don't store a shared_ptr here because as long as we're alive the parent
+			// must be too.
+			future_shared_state<ParentResult>* parent_;
 			Function continuation_;
 		};
 
@@ -610,34 +555,34 @@ namespace daily
 		template<typename Result, typename ParentResult, typename Function>
 		auto make_continue_on_continuation(
 			continue_on::any_t,
-			std::shared_ptr<future_shared_state<ParentResult>> parent, 
+			future_shared_state<ParentResult>* parent, 
 			Function&& func)
 		{
 			return std::make_shared<
 				continue_on_any_shared_state<ParentResult, Result, Function>
-			>(std::move(parent), std::forward<Function>(func));
+			>(parent, std::forward<Function>(func));
 		}
 
 		template<typename Result, typename ParentResult, typename Function>
 		auto make_continue_on_continuation(
 			continue_on::get_t, 
-			std::shared_ptr<future_shared_state<ParentResult>> parent, 
+			future_shared_state<ParentResult>* parent, 
 			Function&& func)
 		{
 			return std::make_shared<
 				continue_on_get_shared_state<ParentResult, Result, Function>
-			>(std::move(parent), std::forward<Function>(func));
+			>(parent, std::forward<Function>(func));
 		}
 
 		template<typename Result, typename ParentResult, typename Function>
 		auto make_continue_on_continuation(
 			continue_on::set_t, 
-			std::shared_ptr<future_shared_state<ParentResult>> parent, 
+			future_shared_state<ParentResult>* parent,
 			Function&& func)
 		{
 			return std::make_shared<
 				continue_on_set_shared_state<ParentResult, Result, Function>
-			>(std::move(parent), std::forward<Function>(func));
+			>(parent, std::forward<Function>(func));
 		}
 	}
 
@@ -684,8 +629,6 @@ namespace daily
 					}
 					BOOST_CATCH_END
 				}
-
-				state_->remove_end_point(lk);
 			}
 		}
 
@@ -723,9 +666,7 @@ namespace daily
 			}
 
 			future_obtained_ = true;
-			auto lk = state_->lock();
-			state_->add_end_point(lk);
-			return future<Result>(state_, &state_->mutex_);
+			return future<Result>(state_, {state_, &state_->mutex_});
 		}
 
 		// Use a vararg here to avoid having to specialize the whole class for
@@ -806,11 +747,6 @@ namespace daily
 			: mutex_(nullptr)
 		{}
 
-		~future()
-		{
-			cleanup();
-		}
-
 		// move support
 		future(future&& other) noexcept
 			: state_(std::move(other.state_))
@@ -821,7 +757,6 @@ namespace daily
 		{
 			if(&other != this)
 			{
-				cleanup();
 				state_ = std::move(other.state_);
 				mutex_ = std::move(other.mutex_);
 			}
@@ -925,26 +860,16 @@ namespace daily
 		{
 			typedef typename result_of<F, Result>::type ContinuationResult;
 
-			// Copy the current state shared_ptr to keep it around afer the move.
-			auto current_state = state_.get();
+			// 'this' future is now invalidated so we move the state out
+			// to indicate that.
+			auto current_state = std::move(state_);
 			auto continuation_state = detail::make_continue_on_continuation<
 											ContinuationResult
-									>(s, std::move(state_), std::forward<F>(f));
+									>(s, current_state.get(), std::forward<F>(f));
 
 			auto lk = lock();
 			current_state->set_continuation(continuation_state, lk);
 			return future<ContinuationResult>(continuation_state, mutex_);
-		}
-
-		void cleanup()
-		{
-			if(state_)
-			{
-				// We need to tell all of the shared states that the end point has
-				// been removed in order to remove the circular shared_ptr references
-				auto lk = lock();
-				state_->continuation_end_point_removed(lk);
-			}
 		}
 
 		std::unique_lock<std::mutex> lock() const
@@ -961,13 +886,15 @@ namespace daily
 		template<typename, typename, typename>
 		friend class detail::continue_on_basic_shared_state;
 
-		explicit future(std::shared_ptr<shared_state> ss, std::mutex* promise_mutex)
+		explicit future(
+			std::shared_ptr<shared_state> ss, 
+			std::shared_ptr<std::mutex> promise_mutex)
 			: state_(std::move(ss))
 			, mutex_(promise_mutex)
 		{}
 
 		std::shared_ptr<shared_state> state_;
-		std::mutex* mutex_;
+		std::shared_ptr<std::mutex> mutex_;
 	};
 
 	// -------------------------------------------------------------------------
