@@ -16,62 +16,92 @@
 #define DAILY_FUTURE_USEFUTURE_HPP_
 
 #include "daily/future/future.hpp"
+#include "daily/future/default_allocator.hpp"
 #include <utility>
 
 // -----------------------------------------------------------------------------
 //
 namespace daily
 {
-	struct use_future_t {} constexpr use_future;
+    template<typename Allocator = future_default_allocator>
+    struct use_future_t
+    {
+        constexpr use_future_t() noexcept
+        {}
 
-	template <typename... Args>
-	class promise_handler
-	{
-	public:
+        constexpr explicit use_future_t(Allocator alloc) noexcept
+            : allocator_(std::move(alloc))
+        {}
 
-		typedef promise<Args...> promise_type;
+        Allocator get_allocator() const noexcept
+        {
+            return allocator_;
+        }
 
-		promise_handler(use_future_t)
-		{}
+    private:
 
-		void operator()(Args... args)
-		{
-			promise_.set_value(std::move(args)...);
-		}
-		
-		promise_type promise_;
-	};
+        Allocator allocator_;
+    };
 
-} // daily
+#if defined(_MSC_VER)
+    __declspec(selectany) use_future_t<> use_future;
+#elif __GNUC__ == 6 && __GNUC_MINOR__ == 1
+    const use_future_t<> use_future;
+#else
+    constexpr use_future_t<> use_future;
+#endif
 
+    template <typename... Args>
+    class promise_handler
+    {
+    public:
 
+        typedef promise<Args...> promise_type;
+
+        template<typename Allocator>
+        promise_handler(use_future_t<Allocator> const& tag)
+            : promise_(std::allocator_arg, tag.get_allocator())
+        {}
+
+        void operator()(Args... args)
+        {
+            promise_.set_value(std::move(args)...);
+        }
+        
+        promise_type promise_;
+    };
+
+} // namespace daily
+
+// -----------------------------------------------------------------------------
+//
 namespace std {  namespace experimental 
 {
-	template<typename R, typename... Args>
-	struct handler_type<daily::use_future_t, R(Args...)>
-	{
-		typedef daily::promise_handler<Args...> type;
-	};
+    template<typename Allocator, typename R, typename... Args>
+    struct handler_type<daily::use_future_t<Allocator>, R(Args...)>
+    {
+        typedef daily::promise_handler<Args...> type;
+    };
 
+    template <typename... Args>
+    class async_result<daily::promise_handler<Args...>>
+    {
+    public:
 
-	template <typename... Args>
-	class async_result<daily::promise_handler<Args...>>
-	{
-	public:
-		typedef daily::promise_handler<Args...> handler_type;
-		typedef daily::promise<Args...> promise_type;
-		typedef daily::future<Args...> type;
+        typedef daily::promise_handler<Args...> handler_type;
+        typedef daily::promise<Args...> promise_type;
+        typedef daily::future<Args...> type;
 
-		async_result(handler_type& handler)
-			: future_(handler.promise_.get_future())
-		{}
+        async_result(handler_type& handler)
+            : future_(handler.promise_.get_future())
+        {}
 
-		type get() { return std::move(future_); }
+        type get() { return std::move(future_); }
 
-	private:
+    private:
 
-		type future_;
-	};
+        type future_;
+    };
 }}
 
 #endif // DAILY_FUTURE_USEFUTURE_HPP_
