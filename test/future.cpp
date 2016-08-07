@@ -202,6 +202,17 @@ BOOST_AUTO_TEST_CASE( future_continuation_void )
     daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); });
 }
 
+BOOST_AUTO_TEST_CASE( future_continuations_consistent)
+{
+    bool ran = false;
+    daily::promise<char>().get_future().then([&](char){ ran = true; });
+    BOOST_TEST_CHECK(!ran);
+    daily::promise<void>().get_future().then([&](){ ran = true; });
+    BOOST_TEST_CHECK(!ran);
+    daily::promise<int&>().get_future().then([&](int&){ ran = true; });
+    BOOST_TEST_CHECK (!ran);
+}
+
 BOOST_AUTO_TEST_CASE( future_any_continuation )
 {
     daily::promise<float> p;

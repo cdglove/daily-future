@@ -154,7 +154,9 @@ namespace daily
                 std::unique_lock<std::mutex>& lock)
             {
                 exception_ = std::move(p);
-                set_finished(lock);
+                // Don't call set finished because we don't want to run the continuations.
+                finished_ = true;
+                ready_wait_.notify_all();
             }
             
             bool is_finished(std::unique_lock<std::mutex>&)
