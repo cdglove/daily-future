@@ -10,12 +10,7 @@
 // ****************************************************************************
 #define BOOST_TEST_MODULE Future
 #include <boost/test/unit_test.hpp>
-
-#include <experimental/executor>
-#include <experimental/thread_pool>
-#include <experimental/loop_scheduler>
-
-#include "daily/future/use_future.hpp"
+#include "daily/future/future.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -25,29 +20,29 @@ static std::atomic<std::size_t> num_allocations(0);
 static std::atomic<std::size_t> num_frees(0);
 void * operator new(size_t size)
 {
-	++num_allocations;
-	return malloc(size);
+    ++num_allocations;
+    return malloc(size);
 }
 void * operator new[](size_t size)
 {
-	++num_allocations;
-	return malloc(size);
+    ++num_allocations;
+    return malloc(size);
 }
 void operator delete(void * ptr) noexcept
 {
-	if (ptr)
-	{
-		++num_frees;
-		free(ptr);
-	}
+    if (ptr)
+    {
+        ++num_frees;
+        free(ptr);
+    }
 }
 void operator delete[](void * ptr) noexcept
 {
-	if (ptr)
-	{
-		++num_frees;
-		free(ptr);
-	}
+    if (ptr)
+    {
+        ++num_frees;
+        free(ptr);
+    }
 }
 struct CheckAllocations
 {
@@ -58,7 +53,7 @@ struct CheckAllocations
 
     ~CheckAllocations()
     {
-        //BOOST_TEST_CHECK(count_ == num_allocations);
+        BOOST_TEST_CHECK(count_ == num_allocations);
     }
 };
 
@@ -66,10 +61,10 @@ namespace {
 
     struct Buffer
     {
-		Buffer()
-			: head_(memory_)
-		{}
-		
+        Buffer()
+            : head_(memory_)
+        {}
+        
         char memory_[10 * 1024 * 1024];
         char* head_;
     };
@@ -93,7 +88,7 @@ namespace {
             T* ret_val = reinterpret_cast<T*>(buffer_->head_);
             buffer_->head_ += ((sizeof(T) * n) + 7) & ~7;
             assert(buffer_->head_ <= std::end(buffer_->memory_));
-			return ret_val;
+            return ret_val;
 
         }
         void deallocate(T* p, std::size_t n)
@@ -101,12 +96,12 @@ namespace {
             // no-op
         }
 
-		template< class U > struct rebind { typedef LinearAllocator<U> other; };
+        template< class U > struct rebind { typedef LinearAllocator<U> other; };
 
     private:
 
-		template <typename>
-		friend struct LinearAllocator;
+        template <typename>
+        friend struct LinearAllocator;
 
         std::shared_ptr<Buffer> buffer_;
     };
@@ -115,123 +110,269 @@ namespace {
 template<typename Function, typename Allocator>
 struct alloced_handler
 {
-	typedef Allocator alloc_type;
-	
-	alloced_handler(Function f, Allocator alloc)
-		: function_(std::move(f))
-		, allocator_(std::move(alloc))
-	{}
+    typedef Allocator alloc_type;
+    
+    alloced_handler(Function f, Allocator alloc)
+        : function_(std::move(f))
+        , allocator_(std::move(alloc))
+    {}
 
-	template<typename... Args>
-	auto operator()(Args... args)
-	{
-		return function_(std::forward<Args>(args)...);
-	}
+    template<typename... Args>
+    auto operator()(Args... args)
+    {
+        return function_(std::forward<Args>(args)...);
+    }
 
-	Function function_;
-	Allocator allocator_;
+    Function function_;
+    Allocator allocator_;
 };
 
 template<typename Function, typename Allocator> 
 alloced_handler<Function, Allocator> make_alloced_handler(Function&& f, Allocator a)
 {
-	return alloced_handler<Function, typename std::decay<Allocator>::type>(std::forward<Function>(f), a);
+    return alloced_handler<Function, typename std::decay<Allocator>::type>(std::forward<Function>(f), a);
 }
 
 float get_one()
 {
-	return 1.f;
+    return 1.f;
 }
 
-BOOST_AUTO_TEST_CASE( future_use_future_basic )
+BOOST_AUTO_TEST_CASE( future_alloc_promise )
 {
-	std::experimental::thread_pool pool;
-	LinearAllocator<char> alloc;
+    LinearAllocator<char> alloc;
     CheckAllocations check;
-	auto f = std::experimental::dispatch(
-		pool,
-		make_alloced_handler(get_one, alloc),
-		daily::use_future_t<LinearAllocator<char>>(alloc)
-	);
+    typedef int T;
+    daily::promise<T> p(std::allocator_arg, alloc);
+    daily::future<T> f = p.get_future();
+    p.set_value(1);
+    BOOST_TEST_CHECK(f.valid() == true);
+    BOOST_TEST_CHECK(f.get() == 1);
+    BOOST_TEST_CHECK(f.valid() == false);
+}
 
-	BOOST_TEST_CHECK(f.valid() == true);
-	auto f2 = f.then(
-        daily::continue_on::get, 
-        make_alloced_handler([](float f) { return f * 2; }, alloc),
+BOOST_AUTO_TEST_CASE( future_alloc_continuation_noncircular )
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    daily::future<int> f2 = f.then([](float f) { return (int)f * 2; }, alloc);
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); }, alloc);
+}
+
+BOOST_AUTO_TEST_CASE( future_alloc_continuation_void )
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    daily::promise<void> p(std::allocator_arg, alloc);
+    daily::future<void> f = p.get_future();
+    daily::future<int> f2 = f.then([] { return 2; }, alloc);
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); }, alloc);
+}
+
+BOOST_AUTO_TEST_CASE( future_alloc_continuations_consistent)
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    bool ran = false;
+    daily::promise<char>(std::allocator_arg, alloc).get_future().then([&](char){ ran = true; }, alloc);
+    BOOST_TEST_CHECK(!ran);
+    daily::promise<void>(std::allocator_arg, alloc).get_future().then([&](){ ran = true; }, alloc);
+    BOOST_TEST_CHECK(!ran);
+    daily::promise<int&>(std::allocator_arg, alloc).get_future().then([&](int&){ ran = true; }, alloc);
+    BOOST_TEST_CHECK (!ran);
+}
+
+BOOST_AUTO_TEST_CASE( future_alloc_any_continuation )
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    daily::future<int> f2 = f.then([](float f) { return (int)f * 2; }, alloc);
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    daily::future<short> f3 = f2.then([](int i) { return (short)(i * 2); }, alloc);
+    p.set_value(1.f);
+    BOOST_TEST_CHECK(f3.get() == 4);
+    f3 = daily::future<short>();
+}
+
+BOOST_AUTO_TEST_CASE( future_alloc_get_continuation )
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    daily::future<int> f2 = f.then([](float f) { return (int)f * 2; }, alloc);
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    bool continued = false;
+    daily::future<short> f3 = f2.then(daily::continue_on::get, 
+        [&continued](int i)
+        {
+            continued = true;
+            return (short)(i * 2); 
+        },
+        alloc
+    );
+    p.set_value(1.f);
+    BOOST_TEST_CHECK(continued == false);
+    BOOST_TEST_CHECK(f3.get() == 4);
+    BOOST_TEST_CHECK(continued == true);
+}
+
+BOOST_AUTO_TEST_CASE( future_alloc_get_chain_continuation )
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    daily::future<int> f2 = f.then(daily::continue_on::get, 
+        [](float f) { return (int)f * 2; },
         alloc
     );
 
-	BOOST_TEST_CHECK(f.valid() == false);
-	BOOST_TEST_CHECK(f2.get() == 2.f);
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    bool continued = false;
+    daily::future<short> f3 = f2.then(daily::continue_on::get, 
+        [&continued](int i)
+        {
+            continued = true;
+            return (short)(i * 2); 
+        },
+        alloc
+    );
+    p.set_value(1.f);
+    BOOST_TEST_CHECK(continued == false);
+    BOOST_TEST_CHECK(f3.get() == 4);
+    BOOST_TEST_CHECK(continued == true);
 }
 
-BOOST_AUTO_TEST_CASE( future_use_future_throw )
+BOOST_AUTO_TEST_CASE( future_alloc_set_continuation )
 {
-	std::experimental::thread_pool pool;
-	LinearAllocator<char> alloc;
+    LinearAllocator<char> alloc;
     CheckAllocations check;
-
-	auto f = std::experimental::dispatch(
-		pool,
-		get_one,
-		daily::use_future_t<LinearAllocator<char>>(alloc)
-	);
-
-	BOOST_TEST_CHECK(f.valid() == true);
-	auto f2 = f.then(
-		daily::continue_on::get, 
-		make_alloced_handler([](float f)
-		{
-			throw std::logic_error("");
-			return f * 2; 
-        }, alloc),
-		alloc
-	);
-	BOOST_TEST_CHECK(f.valid() == false);
-	
-	bool exception_caught = false;
-	try
-	{
-		f2.get();
-	}
-	catch(std::logic_error&)
-	{
-		exception_caught = true;
-	}
-	BOOST_TEST_CHECK(exception_caught == true);
-	BOOST_TEST_CHECK(f2.valid() == false);
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    daily::future<int> f2 = f.then([](float f) { return (int)f * 2; }, alloc);
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    bool continued = false;
+    daily::future<short> f3 = f2.then(daily::continue_on::set, 
+        [&continued](int i)
+        {
+            continued = true;
+            return (short)(i * 2); 
+        },
+        alloc
+    );
+    p.set_value(1.f);
+    BOOST_TEST_CHECK(continued == true);
+    BOOST_TEST_CHECK(f3.get() == 4);
 }
 
-BOOST_AUTO_TEST_CASE( future_use_future_executor )
+BOOST_AUTO_TEST_CASE( future_alloc_set_chain_continuation )
 {
-	std::experimental::thread_pool pool;
-	std::experimental::loop_scheduler looper;
-	LinearAllocator<char> alloc;
+    LinearAllocator<char> alloc;
     CheckAllocations check;
-    
-	auto f = std::experimental::dispatch(
-		pool,
-		make_alloced_handler(get_one, alloc),
-		daily::use_future_t<LinearAllocator<char>>(alloc)
-	);
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    daily::future<int> f2 = f.then(daily::continue_on::set, 
+        [](float f) { return (int)f * 2; }, alloc);
 
-	BOOST_TEST_CHECK(f.valid() == true);
-	bool has_run = false;
-	f.wait();
-	auto f2 = f.then(
-		daily::execute::dispatch,
-		looper,
-		make_alloced_handler([&has_run](float f) 
-		{ 
-			has_run = true;
-			return f * 2.f;
-		}, alloc),
-       	alloc
-	);
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    bool continued = false;
+    daily::future<short> f3 = f2.then(daily::continue_on::set, 
+        [&continued](int i)
+        {
+            continued = true;
+            return (short)(i * 2); 
+        },
+        alloc
+    );
+    p.set_value(1.f);
+    BOOST_TEST_CHECK(continued == true);
+    BOOST_TEST_CHECK(f3.get() == 4);
+}
 
-	BOOST_TEST_CHECK(f.valid() == false);
-	BOOST_TEST_CHECK(has_run == false);
-	looper.run();
-	BOOST_TEST_CHECK(has_run == true);
-	BOOST_TEST_CHECK(f2.get() == 2.f);
+BOOST_AUTO_TEST_CASE( future_alloc_get_set_chain_continuation )
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    bool get_ran = false;
+    daily::future<int> f2 = f.then(
+        daily::continue_on::get, 
+        [&get_ran](float f) 
+        {
+            get_ran = true;
+            return (int)f * 2; 
+        },
+        alloc
+    );
+
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    bool set_ran = false;
+    daily::future<short> f3 = f2.then(
+        daily::continue_on::set, 
+        [&set_ran](int i)
+        {
+            set_ran = true;
+            return (short)(i * 2); 
+        },
+        alloc
+    );
+    BOOST_TEST_CHECK(get_ran == false);
+    p.set_value(1.f);
+    BOOST_TEST_CHECK(get_ran == false);
+    BOOST_TEST_CHECK(f3.get() == 4);
+    BOOST_TEST_CHECK(get_ran == true);
+    BOOST_TEST_CHECK(set_ran == true);
+}
+
+BOOST_AUTO_TEST_CASE( future_alloc_set_get_chain_continuation )
+{
+    LinearAllocator<char> alloc;
+    CheckAllocations check;
+    daily::promise<float> p(std::allocator_arg, alloc);
+    daily::future<float> f = p.get_future();
+    bool set_ran = false;
+    daily::future<int> f2 = f.then(
+        daily::continue_on::set, 
+        [&set_ran](float f) 
+        {
+            set_ran = true;
+            return (int)f * 2; 
+        },
+        alloc
+    );
+
+    BOOST_TEST_CHECK(f2.valid() == true);
+    BOOST_TEST_CHECK(f.valid() == false);
+    bool get_ran = false;
+    daily::future<short> f3 = f2.then(
+        daily::continue_on::get, 
+        [&get_ran](int i)
+        {
+            get_ran = true;
+            return (short)(i * 2); 
+        },
+        alloc
+    );
+    BOOST_TEST_CHECK(set_ran == false);
+    p.set_value(1.f);
+    BOOST_TEST_CHECK(set_ran == true);
+    BOOST_TEST_CHECK(get_ran == false);
+    BOOST_TEST_CHECK(f3.get() == 4);
+    BOOST_TEST_CHECK(get_ran == true);
 }

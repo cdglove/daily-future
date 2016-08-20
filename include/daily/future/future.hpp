@@ -137,7 +137,7 @@ namespace daily
             future_shared_state_base()
                 : finished_(false)
                 , is_valid_(true)
-            {}	
+            {}  
 
             void set_finished(std::unique_lock<std::mutex>& lock)
             {
@@ -162,6 +162,11 @@ namespace daily
             bool is_finished(std::unique_lock<std::mutex>&)
             {
                 return finished_;
+            }
+
+            bool has_exception(std::unique_lock<std::mutex>&) const
+            {
+                return exception_ ? true : false;
             }
 
             void set_invalid(std::unique_lock<std::mutex>&)
@@ -273,6 +278,11 @@ namespace daily
                 set_invalid(lock);
                 this->check_exception(lock);
                 return *std::move(result_);
+            }
+
+            bool has_value(std::unique_lock<std::mutex>&) const
+            {
+                return result_;
             }
 
         private:
@@ -1083,25 +1093,43 @@ namespace daily
 
         void wait() const
         {
-            assert(valid());
             auto lk = lock();
+            assert(state_->is_valid(lk));
             state_->do_wait(lk);
+        }
+
+        bool is_ready() const
+        {
+            auto lk = lock();
+            return state_->is_finished(lk);
+        }
+
+        bool has_exception() const
+        {
+            auto lk = lock();
+            return state_->has_exception(lk);
+        }
+
+        bool has_value() const
+        {
+            auto lk = lock();
+            return state_->has_value(lk);
         }
 
         template <typename Rep, typename Period>
         future_status wait_for(std::chrono::duration<Rep, Period> const& rel_time) const
         {
-            assert(valid());
             auto lk = lock();
-            return state_.do_wait_for(rel_time, lk);
+            assert(state_->is_valid(lk));
+            return state_->do_wait_for(rel_time, lk);
         }
 
         template <typename Clock, typename Duration>
         future_status wait_until(std::chrono::time_point<Clock, Duration> const& abs_time) const
         {
-            assert(valid());
             auto lk = lock();
-            return state_.do_wait_until(abs_time, lk);
+            assert(state_->is_valid(lk));
+            return state_->do_wait_until(abs_time, lk);
         }
 
         template<typename F, typename Allocator = future_default_allocator>
@@ -1180,7 +1208,7 @@ namespace daily
         struct result_of<Function, void>
         {
             typedef decltype(std::declval<Function>()()) type;
-        };		
+        };      
 
         template<typename Selector, typename F, typename Allocator>
         auto continue_on_then(Selector s, F&& f, Allocator const& alloc)
