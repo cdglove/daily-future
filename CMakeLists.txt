@@ -11,4 +11,6 @@ target_include_directories(${LIBRARY_NAME} SYSTEM INTERFACE ${Boost_INCLUDE_DIRS
 
 set(Daily_Libraries ${Daily_Libraries} ${LIBRARY_NAME} PARENT_SCOPE)
 
-add_subdirectory(test)
+if(DAILY_BUILD_TESTS)
+	add_subdirectory(test)
+endif()
