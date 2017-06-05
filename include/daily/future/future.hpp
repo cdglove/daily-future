@@ -1193,7 +1193,26 @@ namespace daily
             return executor_then(d, ex, std::forward<F>(f), alloc);
         }
 
+        future(
+            std::shared_ptr<shared_state> ss, 
+            std::shared_ptr<std::mutex> promise_mutex)
+            : state_(std::move(ss))
+            , mutex_(promise_mutex)
+        {}
+
     private:
+
+        template<typename Result>
+        struct unwrap_nested_future
+        {
+            typedef future<Result> type;
+        };
+
+        template<typename Result>
+        struct unwrap_nested_future<future<Result>>
+        {
+            typedef unwrap_nested_future<Result> type;
+        };
 
         template<typename Function, typename Param>
         struct result_of;
@@ -1201,15 +1220,19 @@ namespace daily
         template<typename Function, typename Param>
         struct result_of
         {
-            typedef decltype(std::declval<Function>()(std::declval<Param>())) type;
+            typedef typename unwrap_nested_future<
+                decltype(std::declval<Function>()(std::declval<Param>()))
+            >::type type;
         };
 
         template<typename Function>
         struct result_of<Function, void>
         {
-            typedef decltype(std::declval<Function>()()) type;
-        };      
-
+            typedef typename unwrap_nested_future<
+                decltype(std::declval<Function>()())
+            >::type type;
+        };  
+        
         template<typename Selector, typename F, typename Allocator>
         auto continue_on_then(Selector s, F&& f, Allocator const& alloc)
         {
@@ -1225,7 +1248,7 @@ namespace daily
 
             auto lk = lock();
             current_state->set_continuation(continuation_state, lk);
-            return future<ContinuationResult>(continuation_state, mutex_);
+            return future<ContinuationResult>(std::move(continuation_state), std::move(mutex_));
         }
 
         template<typename Selector, typename Executor, typename F, typename Allocator>
@@ -1244,7 +1267,7 @@ namespace daily
 
             auto lk = lock();
             current_state->set_continuation(continuation_state, lk);
-            return future<ContinuationResult>(continuation_state, mutex_);
+            return future<ContinuationResult>(std::move(continuation_state), std::move(mutex_));
         }
 
         std::unique_lock<std::mutex> lock() const
@@ -1260,13 +1283,6 @@ namespace daily
 
         template<typename, typename, typename>
         friend class detail::continue_on_basic_shared_state;
-
-        explicit future(
-            std::shared_ptr<shared_state> ss, 
-            std::shared_ptr<std::mutex> promise_mutex)
-            : state_(std::move(ss))
-            , mutex_(promise_mutex)
-        {}
 
         std::shared_ptr<shared_state> state_;
         std::shared_ptr<std::mutex> mutex_;
