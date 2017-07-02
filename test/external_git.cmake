@@ -64,7 +64,7 @@ function(clone_external_git_repo_impl)
       endif()
     endif()
   endif()
-endfunction(clone_external_git_repo)
+endfunction(clone_external_git_repo_impl)
 
 ###############################################################################
 #
