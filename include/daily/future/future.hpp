@@ -1168,29 +1168,29 @@ namespace daily
 
         template<typename Executor, typename F, typename Allocator = future_default_allocator>
         auto then(
-            execute::dispatch_t d, Executor& ex, F&& f,
+            execute::dispatch_t d, Executor&& ex, F&& f,
             Allocator const& alloc = Allocator())
         {
             assert(valid());
-            return executor_then(d, ex, std::forward<F>(f), alloc);
+            return executor_then(d, std::forward<Executor>(ex), std::forward<F>(f), alloc);
         }
 
         template<typename Executor, typename F, typename Allocator = future_default_allocator>
         auto then(
-            execute::post_t p, Executor& ex, F&& f,
+            execute::post_t p, Executor&& ex, F&& f,
             Allocator const& alloc = Allocator())
         {
             assert(valid());
-            return executor_then(p, ex, std::forward<F>(f), alloc);
+            return executor_then(p, std::forward<Executor>(ex), std::forward<F>(f), alloc);
         }
 
         template<typename Executor, typename F, typename Allocator = future_default_allocator>
         auto then(
-            execute::defer_t d, Executor& ex, F&& f,
+            execute::defer_t d, Executor&& ex, F&& f,
             Allocator const& alloc = Allocator())
         {
             assert(valid());
-            return executor_then(d, ex, std::forward<F>(f), alloc);
+            return executor_then(d, std::forward<Executor>(ex), std::forward<F>(f), alloc);
         }
 
     private:
@@ -1229,7 +1229,7 @@ namespace daily
         }
 
         template<typename Selector, typename Executor, typename F, typename Allocator>
-        auto executor_then(Selector s, Executor& ex, F&& f, Allocator const& alloc)
+        auto executor_then(Selector s, Executor&& ex, F&& f, Allocator const& alloc)
         {
             typedef typename result_of<F, Result>::type ContinuationResult;
 
